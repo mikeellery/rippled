@@ -92,10 +92,11 @@ for target in "${targets[@]}"; do
     dotifile=$(find ./CMakeFiles | grep -e "/$file\..*\.i$")
     grep "^#" "$dotifile" |\
         cut -d " " -f 3 |\
-        sed -e 's/^ *"//g' -e 's/" *$//g' |\
+        sed -e 's:^ *"::g' -e 's:" *$::g' |\
+        sed -E -e 's:\\+:/:g' |\
         sort | uniq |\
         grep "/src/" |\
-        sed -E -e "s/^.+\/src\//   src\//g"
+        sed -E -e "s:^.+/src/:   src/:g"
 done
 
 
