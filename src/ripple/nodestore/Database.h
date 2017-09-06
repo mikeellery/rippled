@@ -27,6 +27,7 @@
 #include <ripple/nodestore/impl/Tuning.h>
 #include <ripple/nodestore/Scheduler.h>
 #include <ripple/nodestore/NodeObject.h>
+#include <thread>
 
 #include <thread>
 
