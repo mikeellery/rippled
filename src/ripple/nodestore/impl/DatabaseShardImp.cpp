@@ -268,6 +268,31 @@ DatabaseShardImp::getCompleteShards()
     return status_;
 }
 
+void
+DatabaseShardImp::validate()
+{
+    if (complete_.empty() && !incomplete_)
+    {
+        JLOG(j_.fatal()) <<
+            "No shards to validate";
+        return;
+    }
+
+    std::string s{"Validating shards "};
+    for (auto& e : complete_)
+        s += std::to_string(e.second->index()) + ",";
+    if (incomplete_)
+        s += std::to_string(incomplete_->index());
+    else
+        s.pop_back();
+    JLOG(j_.fatal()) << s;
+
+    for (auto& e : complete_)
+        e.second->validate(app_, j_);
+    if (incomplete_)
+        incomplete_->validate(app_, j_);
+}
+
 std::int32_t
 DatabaseShardImp::getWriteLoad() const
 {

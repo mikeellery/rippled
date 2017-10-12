@@ -1058,6 +1058,7 @@ private:
     void addTxnSeqField();
     void addValidationSeqFields();
     bool updateTables ();
+    bool validateShards ();
     void startGenesisLedger ();
 
     std::shared_ptr<Ledger>
@@ -1248,6 +1249,9 @@ bool ApplicationImp::setup()
         sFamily_->treecache().setTargetSize(config_->getSize(siTreeCacheSize));
         sFamily_->treecache().setTargetAge(config_->getSize(siTreeCacheAge));
     }
+
+    if (config_->valShards && !validateShards())
+        return false;
 
     //----------------------------------------------------------------------
     //
@@ -2042,6 +2046,24 @@ bool ApplicationImp::updateTables ()
         getNodeStore().import (*source);
     }
 
+    return true;
+}
+
+bool ApplicationImp::validateShards()
+{
+    if (config_->section(ConfigSection::shardDatabase()).empty())
+    {
+        JLOG (m_journal.fatal()) <<
+            "The [shard_db] configuration setting must be set";
+        return false;
+    }
+    if (!m_shardStore)
+    {
+        JLOG(m_journal.fatal()) <<
+            "Invalid [shard_db] configuration";
+        return false;
+    }
+    m_shardStore->validate();
     return true;
 }
 
