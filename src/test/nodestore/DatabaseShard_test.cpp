@@ -19,6 +19,7 @@
 
 #include <BeastConfig.h>
 #include <test/nodestore/TestBase.h>
+#include <ripple/app/ledger/LedgerToJson.h>
 #include <ripple/core/ConfigSections.h>
 #include <ripple/protocol/HashPrefix.h>
 #include <algorithm>
@@ -96,7 +97,7 @@ class DatabaseShard_test : public TestBase
         return l;
     }
 
-    void shardStoreAndFetch()
+    void testShardStoreAndFetch()
     {
         using namespace test::jtx;
         beast::temp_dir dbpath;
@@ -148,25 +149,59 @@ class DatabaseShard_test : public TestBase
             ++txCount;
         }
         BEAST_EXPECT(txCount == 16);
+
+        // verify the metadata/header info by serializing to json
+        BEAST_EXPECT(
+            getJson (
+                LedgerFill {*l, LedgerFill::full | LedgerFill::expand}) ==
+            getJson (
+                LedgerFill {*fetched, LedgerFill::full | LedgerFill::expand}));
+
+        BEAST_EXPECT(
+            getJson (
+                LedgerFill {*l, LedgerFill::full | LedgerFill::binary}) ==
+            getJson (
+                LedgerFill {*fetched, LedgerFill::full | LedgerFill::binary}));
+
+        // walk shamap and validate each node
+        auto fcomp = [&](SHAMapAbstractNode& node)->bool {
+            auto nSrc = env.app().getNodeStore().fetch(
+                node.getNodeHash().as_uint256(), node.getSeq());
+            if (! BEAST_EXPECT(nSrc))
+                return false;
+
+            auto nDst = env.app().getShardStore()->fetch(
+                node.getNodeHash().as_uint256(), node.getSeq());
+            if (! BEAST_EXPECT(nDst))
+                return false;
+
+            BEAST_EXPECT(isSame(nSrc, nDst));
+
+            return true;
+        };
+
+        l->stateMap().snapShot(false)->visitNodes(fcomp);
+        l->txMap().snapShot(false)->visitNodes(fcomp);
     }
 
 public:
     void run ()
     {
-        shardStoreAndFetch();
-        return;  // TODO remove
+        testShardStoreAndFetch();
 
         testNodeStore<DatabaseShard> ("nudb");
         testNodeStore<DatabaseShard> ("nudb", ledgersPerShard);
         testNodeStore<DatabaseShard> ("nudb", ledgersPerShard + 1);
-        testNodeStore<DatabaseShard> ("nudb", ledgersPerShard * 2 - 1);
-        testNodeStore<DatabaseShard> ("nudb", ledgersPerShard * 2);
+        // TODO - enable these if/when ledgersPerShard is made
+        // configurable (so can be smaller for the test)
+        // testNodeStore<DatabaseShard> ("nudb", ledgersPerShard * 2 - 1);
+        // testNodeStore<DatabaseShard> ("nudb", ledgersPerShard * 2);
     #if RIPPLE_ROCKSDB_AVAILABLE
         testNodeStore<DatabaseShard> ("rocksdb");
         testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard);
         testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard + 1);
-        testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard * 2 - 1);
-        testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard * 2);
+        // testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard * 2 - 1);
+        // testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard * 2);
     #endif
     }
 };
