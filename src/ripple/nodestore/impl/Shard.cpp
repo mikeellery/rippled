@@ -18,26 +18,29 @@
 //==============================================================================
 
 #include <BeastConfig.h>
-
 #include <ripple/nodestore/impl/Shard.h>
-#include <ripple/nodestore/Manager.h>
-
 #include <ripple/app/ledger/InboundLedgers.h>
+#include <ripple/nodestore/Manager.h>
 
 namespace ripple {
 namespace NodeStore {
 
-Shard::Shard(std::uint32_t shardIndex)
-    : index_ {shardIndex}
-    , firstSeq_ {std::max(genesisSeq, detail::firstSeq(shardIndex))}
-    , lastSeq_ {detail::lastSeq(shardIndex)}
+Shard::Shard(std::uint32_t index, beast::Journal& j)
+    : index_ {index}
+    , firstSeq_ {std::max(genesisSeq, detail::firstSeq(index))}
+    , lastSeq_ {detail::lastSeq(index)}
+    , pCache_ ("shard " + std::to_string(index_), cacheTargetSize,
+        cacheTargetSeconds, stopwatch(), j)
+    , nCache_ ("shard " + std::to_string(index_), stopwatch(),
+        cacheTargetSize, cacheTargetSeconds)
+    , j_(j)
 {
     assert(index_ >= detail::genesisShardIndex);
 }
 
 bool
 Shard::open(Section config, Scheduler& scheduler,
-    boost::filesystem::path dir, beast::Journal& j)
+    boost::filesystem::path dir)
 {
     assert(!backend_);
     using namespace boost::filesystem;
@@ -46,12 +49,14 @@ Shard::open(Section config, Scheduler& scheduler,
     auto newShard {!is_directory(dir_) || is_empty(dir_)};
     try
     {
-        backend_ = Manager::instance().make_Backend(config, scheduler, j);
+        backend_ = Manager::instance().make_Backend(
+            config, scheduler, j_);
     }
     catch (std::exception const& e)
     {
-        JLOG(j.error()) <<
-            "Shard: Exception, " << e.what();
+        JLOG(j_.error()) <<
+            "shard " << std::to_string(index_) <<
+            " exception: " << e.what();
         return false;
     }
 
@@ -61,7 +66,7 @@ Shard::open(Section config, Scheduler& scheduler,
     control_ = dir_ / controlFileName;
     if (newShard)
     {
-        if (!saveControl(j))
+        if (!saveControl())
             return false;
     }
     else if (is_regular_file(control_))
@@ -69,8 +74,9 @@ Shard::open(Section config, Scheduler& scheduler,
         std::ifstream ifs(control_.string());
         if (!ifs.is_open())
         {
-            JLOG(j.error()) <<
-                "Unable to open control file";
+            JLOG(j_.error()) <<
+                "shard " << std::to_string(index_) <<
+                " unable to open control file";
             return false;
         }
         boost::archive::text_iarchive ar(ifs);
@@ -80,16 +86,18 @@ Shard::open(Section config, Scheduler& scheduler,
             if (boost::icl::first(storedSeqs_) < firstSeq_ ||
                 boost::icl::last(storedSeqs_) > lastSeq_)
             {
-                JLOG(j.error()) <<
-                    "Invalid control file";
+                JLOG(j_.error()) <<
+                    "shard " << std::to_string(index_) <<
+                    " invalid control file";
                 return false;
             }
             if (boost::icl::length(storedSeqs_) ==
                 (index_ == detail::genesisShardIndex ?
                     detail::genesisNumLedgers : ledgersPerShard))
             {
-                JLOG(j.debug()) <<
-                    "Found control file for complete shard";
+                JLOG(j_.error()) <<
+                    "shard " << std::to_string(index_) <<
+                    " found control file for complete shard";
                 storedSeqs_.clear();
                 remove(control_);
                 complete_ = true;
@@ -103,18 +111,16 @@ Shard::open(Section config, Scheduler& scheduler,
 }
 
 bool
-Shard::setStored(std::shared_ptr<Ledger const> const& l,
-    beast::Journal& j)
+Shard::setStored(std::shared_ptr<Ledger const> const& l)
 {
     assert(backend_&& !complete_);
     if (boost::icl::contains(storedSeqs_, l->info().seq))
     {
         assert(false);
-        JLOG(j.error()) <<
-            "ledger seq " <<
-            std::to_string(l->info().seq) <<
-            " already stored in shard " <<
-            std::to_string(index_);
+        JLOG(j_.error()) <<
+            "shard " << std::to_string(index_) <<
+            " ledger seq " << std::to_string(l->info().seq) <<
+            " already stored";
         return false;
     }
     if (boost::icl::length(storedSeqs_) >=
@@ -129,22 +135,21 @@ Shard::setStored(std::shared_ptr<Ledger const> const& l,
         complete_ = true;
         storedSeqs_.clear();
 
-        JLOG(j.debug()) <<
+        JLOG(j_.debug()) <<
             "shard " << std::to_string(index_) << " complete";
     }
     else
     {
-        if (backend_->fdlimit() != 0 && !saveControl(j))
+        if (backend_->fdlimit() != 0 && !saveControl())
             return false;
         storedSeqs_.insert(l->info().seq);
         lastStored_ = l;
     }
 
-    JLOG(j.debug()) <<
-        "ledger seq " <<
-        std::to_string(l->info().seq) <<
-        " stored in shard " <<
-        std::to_string(index_);
+    JLOG(j_.debug()) <<
+        "shard " << std::to_string(index_) <<
+        " ledger seq " << std::to_string(l->info().seq) <<
+        " stored";
 
     return true;
 }
@@ -168,7 +173,7 @@ Shard::hasLedger(std::uint32_t seq) const
 }
 
 void
-Shard::validate(Application& app, beast::Journal& j)
+Shard::validate(Application& app)
 {
     uint256 hash;
     std::uint32_t seq;
@@ -180,22 +185,20 @@ Shard::validate(Application& app, beast::Journal& j)
             " order by LedgerSeq asc limit 1", app);
         if (!l)
         {
-            JLOG(j.fatal()) <<
-                "Unable to validate shard " <<
-                std::to_string(index_) <<
-                ", can't find lookup data";
+            JLOG(j_.fatal()) <<
+                "shard " << std::to_string(index_) <<
+                " unable to validate. No lookup data";
             return;
         }
         if (seq != lastSeq_)
         {
             l->setImmutable(app.config());
-            auto h = hashOfSeq(*l, lastSeq_, j);
+            auto h = hashOfSeq(*l, lastSeq_, j_);
             if (!h)
             {
-                JLOG(j.fatal()) <<
-                    "Unable to validate shard " <<
-                    std::to_string(index_) <<
-                    ", can't find hash for ledger seq " <<
+                JLOG(j_.fatal()) <<
+                    "shard " << std::to_string(index_) <<
+                    " unable to validate. No hash for ledger seq " <<
                     std::to_string(lastSeq_);
                 return;
             }
@@ -203,6 +206,11 @@ Shard::validate(Application& app, beast::Journal& j)
             seq = lastSeq_;
         }
     }
+
+    JLOG(j_.fatal()) <<
+        "Validating shard " << std::to_string(index_) <<
+        " ledgers " << std::to_string(firstSeq_) << "-" <<
+        std::to_string(lastSeq_);
 
     std::shared_ptr<Ledger const> next;
     while (seq >= firstSeq_)
@@ -212,15 +220,17 @@ Shard::validate(Application& app, beast::Journal& j)
         {
             if (backend_->fetch(hash.begin(), &nObj) == dataCorrupt)
             {
-                JLOG(j.fatal()) <<
-                    "Corrupt NodeObject hash" << hash;
+                JLOG(j_.fatal()) <<
+                    "shard " << std::to_string(index_) <<
+                    " corrupt NodeObject hash " << hash;
                 break;
             }
         }
         catch (std::exception const& e)
         {
-            JLOG(j.fatal()) <<
-                "Exception, " << e.what();
+            JLOG(j_.fatal()) <<
+                "shard " << std::to_string(index_) <<
+                " exception: " << e.what();
             break;
         }
         if (!nObj)
@@ -230,8 +240,9 @@ Shard::validate(Application& app, beast::Journal& j)
                 true), app.config(), *app.shardFamily());
         if (l->info().hash != hash || l->info().seq != seq)
         {
-            JLOG(j.fatal()) <<
-                "hash " << hash <<
+            JLOG(j_.fatal()) <<
+                "shard " << std::to_string(index_) <<
+                " hash " << hash <<
                 " seq " << std::to_string(seq) <<
                 " cannot be a ledger";
             break;
@@ -242,8 +253,10 @@ Shard::validate(Application& app, beast::Journal& j)
         if (!l->stateMap().fetchRoot(
             SHAMapHash {l->info().accountHash}, nullptr))
         {
-            JLOG(j.fatal()) <<
-                "Don't have Account State root for ledger";
+            JLOG(j_.fatal()) <<
+                "shard " << std::to_string(index_) <<
+                " ledger seq " << std::to_string(seq) <<
+                " missing Account State root";
             break;
         }
         if (l->info().txHash.isNonZero())
@@ -251,39 +264,48 @@ Shard::validate(Application& app, beast::Journal& j)
             if (!l->txMap().fetchRoot(
                 SHAMapHash {l->info().txHash}, nullptr))
             {
-                JLOG(j.fatal()) <<
-                    "Don't have TX root for ledger";
+                JLOG(j_.fatal()) <<
+                    "shard " << std::to_string(index_) <<
+                    " ledger seq " << std::to_string(seq) <<
+                    " missing TX root";
                 break;
             }
         }
-        if (!valLedger(l, next, j))
+        if (!valLedger(l, next))
             break;
         hash = l->info().parentHash;
         --seq;
         next = l;
     }
-    std::string s("shard " + std::to_string(index_) + " (" +
-        std::to_string(firstSeq_) + "-" +
-            std::to_string(lastSeq_) + "). ");
     if (seq < firstSeq_)
-        s += "Valid and complete.";
+    {
+        JLOG(j_.fatal()) <<
+            "Valid and complete.";
+    }
     else if (complete_)
-        s += "Invalid, failed on seq " + std::to_string(seq) +
-            " hash " + to_string(hash);
+    {
+        JLOG(j_.fatal()) <<
+            "Invalid, failed on seq " << std::to_string(seq) <<
+            " hash " << to_string(hash);
+    }
     else
-        s += "Incomplete, stopped at seq " + std::to_string(seq) +
-            " hash " + to_string(hash);
-    JLOG(j.fatal()) << s;
+    {
+        JLOG(j_.fatal()) <<
+            "Incomplete, stopped at seq " << std::to_string(seq) <<
+            " hash " << to_string(hash);
+    }
 }
 
 bool
 Shard::valLedger(std::shared_ptr<Ledger const> const& l,
-    std::shared_ptr<Ledger const> const& next, beast::Journal& j)
+    std::shared_ptr<Ledger const> const& next)
 {
     if (l->info().hash.isZero() || l->info().accountHash.isZero())
     {
-        JLOG(j.fatal()) <<
-            "Invalid ledger";
+        JLOG(j_.fatal()) <<
+            "shard " << std::to_string(index_) <<
+            " ledger seq " << std::to_string(l->info().seq) <<
+            " invalid";
         return false;
     }
     bool error {false};
@@ -294,15 +316,19 @@ Shard::valLedger(std::shared_ptr<Ledger const> const& l,
         {
             if (backend_->fetch(hash.begin(), &nObj) == dataCorrupt)
             {
-                JLOG(j.fatal()) <<
-                    "Corrupt NodeObject hash" << hash;
+                JLOG(j_.fatal()) <<
+                    "shard " << std::to_string(index_) <<
+                    " ledger seq " << std::to_string(l->info().seq) <<
+                    " corrupt NodeObject hash " << hash;
                 error = true;
             }
         }
         catch (std::exception const& e)
         {
-            JLOG(j.fatal()) <<
-                "Exception, " << e.what();
+            JLOG(j_.fatal()) <<
+                "shard " << std::to_string(index_) <<
+                " ledger seq " << std::to_string(l->info().seq) <<
+                " exception: " << e.what();
             error = true;
         }
         return !error;
@@ -311,7 +337,13 @@ Shard::valLedger(std::shared_ptr<Ledger const> const& l,
     if (l->stateMap().getHash().isNonZero())
     {
         if (!l->stateMap().isValid())
+        {
+            JLOG(j_.error()) <<
+                "shard " << std::to_string(index_) <<
+                " ledger seq " << std::to_string(l->info().seq) <<
+                " state map invalid";
             return false;
+        }
         try
         {
             if (next)
@@ -321,8 +353,10 @@ Shard::valLedger(std::shared_ptr<Ledger const> const& l,
         }
         catch (std::exception const& e)
         {
-            JLOG(j.fatal()) <<
-                "Exception, " << e.what();
+            JLOG(j_.fatal()) <<
+                "shard " << std::to_string(index_) <<
+                " ledger seq " << std::to_string(l->info().seq) <<
+                " exception: " << e.what();
             return false;
         }
         if (error)
@@ -331,18 +365,23 @@ Shard::valLedger(std::shared_ptr<Ledger const> const& l,
     if (l->info().txHash.isNonZero())
     {
         if (!l->txMap().isValid())
+        {
+            JLOG(j_.error()) <<
+                "shard " << std::to_string(index_) <<
+                " ledger seq " << std::to_string(l->info().seq) <<
+                " transaction map invalid";
             return false;
+        }
         try
         {
-            if (next)
-                l->txMap().visitDifferences(&next->txMap(), f);
-            else
-                l->txMap().visitNodes(f);
+            l->txMap().visitNodes(f);
         }
         catch (std::exception const& e)
         {
-            JLOG(j.fatal()) <<
-                "Exception, " << e.what();
+            JLOG(j_.fatal()) <<
+                "shard " << std::to_string(index_) <<
+                " ledger seq " << std::to_string(l->info().seq) <<
+                " exception: " << e.what();
             return false;
         }
         if (error)
@@ -362,13 +401,14 @@ Shard::updateFileSize()
 }
 
 bool
-Shard::saveControl(beast::Journal& j)
+Shard::saveControl()
 {
     std::ofstream ofs {control_.string(), std::ios::trunc};
     if (!ofs.is_open())
     {
-        JLOG(j.fatal()) <<
-            "Unable to save control file";
+        JLOG(j_.fatal()) <<
+            "shard " << std::to_string(index_) <<
+            " unable to save control file";
         return false;
     }
     boost::archive::text_oarchive ar(ofs);

@@ -32,8 +32,8 @@ namespace NodeStore {
 
 DatabaseShardImp::DatabaseShardImp(Application& app,
     std::string const& name, Stoppable& parent, Scheduler& scheduler,
-        int readThreads, Section const& config, beast::Journal journal)
-    : DatabaseShard(name, parent, scheduler, readThreads, journal)
+        int readThreads, Section const& config, beast::Journal j)
+    : DatabaseShard(name, parent, scheduler, readThreads, j)
     , app_(app)
     , config_(config)
     , dir_(get<std::string>(config, "path"))
@@ -93,8 +93,8 @@ DatabaseShardImp::init()
         auto shardIndex = std::stoul(dirName);
         if (shardIndex < detail::genesisShardIndex)
             continue;
-        auto shard = std::make_unique<Shard>(shardIndex);
-        if (!shard->open(config_, scheduler_, dir_, j_))
+        auto shard = std::make_unique<Shard>(shardIndex, j_);
+        if (!shard->open(config_, scheduler_, dir_))
             return false;
         usedDiskSpace_ += shard->fileSize();
         if (shard->complete())
@@ -104,7 +104,7 @@ DatabaseShardImp::init()
             if (incomplete_)
             {
                 JLOG(j_.error()) <<
-                    "More than one control file";
+                    "More than one control file found";
                 return false;
             }
             incomplete_ = std::move(shard);
@@ -156,15 +156,15 @@ DatabaseShardImp::prepare(std::uint32_t validLedgerSeq)
     if (!shardIndexToAdd)
     {
         JLOG(j_.debug()) <<
-            "no new shards to add";
+            "No new shards to add";
         canAdd_ = false;
         return boost::none;
     }
     // With every new shard, clear the caches.
     app_.shardFamily()->fullbelow().clear();
     app_.shardFamily()->treecache().clear();
-    incomplete_ = std::make_unique<Shard>(*shardIndexToAdd);
-    if (!incomplete_->open(config_, scheduler_, dir_, j_))
+    incomplete_ = std::make_unique<Shard>(*shardIndexToAdd, j_);
+    if (!incomplete_->open(config_, scheduler_, dir_))
     {
         incomplete_.reset();
         remove_all(dir_ / std::to_string(*shardIndexToAdd));
@@ -188,9 +188,10 @@ DatabaseShardImp::fetchLedger(uint256 const& hash, std::uint32_t seq)
     if (ledger->info().hash != hash || ledger->info().seq != seq)
     {
         JLOG(j_.error()) <<
-            "hash " << hash <<
-            " seq " << std::to_string(seq) <<
-            " cannot be a ledger";
+            "shard " << std::to_string(seqToShardIndex(seq)) <<
+            " ledger seq " << std::to_string(seq) <<
+            " hash " << hash <<
+            " has corrupt data";
         return {};
     }
     ledger->stateMap().setLedgerSeq(seq);
@@ -200,7 +201,9 @@ DatabaseShardImp::fetchLedger(uint256 const& hash, std::uint32_t seq)
         SHAMapHash {ledger->info().accountHash}, nullptr))
     {
         JLOG(j_.error()) <<
-            "Don't have Account State root for ledger";
+            "shard " << std::to_string(seqToShardIndex(seq)) <<
+            " ledger seq " << std::to_string(seq) <<
+            " missing Account State root";
         return {};
     }
     if (ledger->info().txHash.isNonZero())
@@ -209,7 +212,9 @@ DatabaseShardImp::fetchLedger(uint256 const& hash, std::uint32_t seq)
             SHAMapHash {ledger->info().txHash}, nullptr))
         {
             JLOG(j_.error()) <<
-                "Don't have TX root for ledger";
+                "shard " << std::to_string(seqToShardIndex(seq)) <<
+                " ledger seq " << std::to_string(seq) <<
+                " missing TX root";
             return {};
         }
     }
@@ -238,7 +243,7 @@ DatabaseShardImp::setStored(std::shared_ptr<Ledger const> const& ledger)
     }
 
     auto sz {incomplete_->fileSize()};
-    if (!incomplete_->setStored(ledger, j_))
+    if (!incomplete_->setStored(ledger))
         return;
     usedDiskSpace_ += (incomplete_->fileSize() - sz);
     if (incomplete_->complete())
@@ -278,7 +283,7 @@ DatabaseShardImp::validate()
         return;
     }
 
-    std::string s{"Validating shards "};
+    std::string s {"Validating shards "};
     for (auto& e : complete_)
         s += std::to_string(e.second->index()) + ",";
     if (incomplete_)
@@ -288,9 +293,9 @@ DatabaseShardImp::validate()
     JLOG(j_.fatal()) << s;
 
     for (auto& e : complete_)
-        e.second->validate(app_, j_);
+        e.second->validate(app_);
     if (incomplete_)
-        incomplete_->validate(app_, j_);
+        incomplete_->validate(app_);
 }
 
 std::int32_t
@@ -311,23 +316,83 @@ void
 DatabaseShardImp::store(NodeObjectType type,
     Blob&& data, uint256 const& hash, std::uint32_t seq)
 {
+#if RIPPLE_VERIFY_NODEOBJECT_KEYS
+    assert(hash == sha512Hash(makeSlice(data)));
+#endif
+    auto nObj = NodeObject::createObject(
+        type, std::move(data), hash);
     auto const shardIndex = seqToShardIndex(seq);
-    std::unique_lock<std::mutex> l(m_);
-    if (!incomplete_ || shardIndex != incomplete_->index())
     {
-        l.unlock();
-        JLOG(j_.warn()) <<
-            "ledger seq " << std::to_string(seq) <<
-            " is not being acquired";
-        return;
+        std::lock_guard<std::mutex> l(m_);
+        if (!incomplete_ || shardIndex != incomplete_->index())
+        {
+            JLOG(j_.warn()) <<
+                "ledger seq " << std::to_string(seq) <<
+                " is not being acquired";
+            return;
+        }
+        incomplete_->pCache().canonicalize(hash, nObj, true);
+        incomplete_->getBackend().store(nObj);
+        incomplete_->nCache().erase(hash);
     }
-    auto& backend = incomplete_->getBackend();
-    l.unlock();
-    storeInternal(type, std::move(data), hash, backend);
-    JLOG(j_.debug()) <<
-        "shard " << std::to_string(shardIndex) <<
-        " ledger seq " << std::to_string(seq) <<
-        " stored";
+    storeStats(nObj->getData().size());
+}
+
+std::shared_ptr<NodeObject>
+DatabaseShardImp::fetch(uint256 const& hash, std::uint32_t seq)
+{
+    TaggedCache<uint256, NodeObject>* pCache;
+    KeyCache<uint256>* nCache;
+    auto const shardIndex = seqToShardIndex(seq);
+    {
+        std::lock_guard<std::mutex> l(m_);
+        auto it = complete_.find(shardIndex);
+        if (it != complete_.end())
+        {
+            pCache = &it->second->pCache();
+            nCache = &it->second->nCache();
+        }
+        else if (incomplete_ && incomplete_->index() == shardIndex)
+        {
+            pCache = &incomplete_->pCache();
+            nCache = &incomplete_->nCache();
+        }
+        else
+            return {};
+    }
+    return doFetch(hash, seq, *pCache, *nCache, false);
+}
+
+bool
+DatabaseShardImp::asyncFetch(uint256 const& hash,
+    std::uint32_t seq, std::shared_ptr<NodeObject>& object)
+{
+    TaggedCache<uint256, NodeObject>* pCache;
+    KeyCache<uint256>* nCache;
+    auto const shardIndex = seqToShardIndex(seq);
+    {
+        std::lock_guard<std::mutex> l(m_);
+        auto it = complete_.find(shardIndex);
+        if (it != complete_.end())
+        {
+            pCache = &it->second->pCache();
+            nCache = &it->second->nCache();
+        }
+        else if (incomplete_ && incomplete_->index() == shardIndex)
+        {
+            pCache = &incomplete_->pCache();
+            nCache = &incomplete_->nCache();
+        }
+        else
+            return false;
+    }
+    // See if the object is in cache
+    object = pCache->fetch(hash);
+    if (object || nCache->touch_if_exists(hash))
+        return true;
+    // Otherwise post a read
+    Database::asyncFetch(hash, seq, *pCache, *nCache);
+    return false;
 }
 
 bool
@@ -338,7 +403,9 @@ DatabaseShardImp::copyLedger(std::shared_ptr<Ledger const> const& ledger)
     {
         assert(false);
         JLOG(j_.error()) <<
-            "Invalid ledger";
+            "source ledger seq " <<
+            std::to_string(ledger->info().seq) <<
+            " is invalid";
         return false;
     }
     auto& srcDB = const_cast<Database&>(
@@ -347,49 +414,64 @@ DatabaseShardImp::copyLedger(std::shared_ptr<Ledger const> const& ledger)
     {
         assert(false);
         JLOG(j_.error()) <<
-            "Source and destination are the same";
+            "same source and destination databases";
         return false;
     }
     auto const shardIndex = seqToShardIndex(ledger->info().seq);
-    std::unique_lock<std::mutex> l(m_);
+    std::lock_guard<std::mutex> l(m_);
     if (!incomplete_ || shardIndex != incomplete_->index())
     {
-        l.unlock();
         JLOG(j_.warn()) <<
-            "ledger seq " <<
+            "source ledger seq " <<
             std::to_string(ledger->info().seq) <<
             " is not being acquired";
         return false;
     }
 
-    auto& backend = incomplete_->getBackend();
-    auto next = incomplete_->lastStored();
-    l.unlock();
-    Batch batch;
-    bool error = false;
-    auto f = [&](SHAMapAbstractNode& node) {
-        if (auto nObj = srcDB.fetch(
-            node.getNodeHash().as_uint256(), node.getSeq()))
-                batch.emplace_back(std::move(nObj));
-        else
-            error = true;
-        return !error;
-    };
-    // Batch the ledger header
+    // Store the ledger header
     {
         Serializer s(128);
         s.add32(HashPrefix::ledgerMaster);
         addRaw(ledger->info(), s);
-        batch.emplace_back(NodeObject::createObject(hotLEDGER,
-            std::move(s.modData()), ledger->info().hash));
+        auto nObj = NodeObject::createObject(hotLEDGER,
+            std::move(s.modData()), ledger->info().hash);
+#if RIPPLE_VERIFY_NODEOBJECT_KEYS
+        assert(nObj->getHash() == sha512Hash(makeSlice(nObj->getData())));
+#endif
+        incomplete_->pCache().canonicalize(
+            nObj->getHash(), nObj, true);
+        incomplete_->getBackend().store(nObj);
+        incomplete_->nCache().erase(nObj->getHash());
+        storeStats(nObj->getData().size());
     }
-    // Batch the state map
+    auto next = incomplete_->lastStored();
+    bool error = false;
+    auto f = [&](SHAMapAbstractNode& node) {
+        if (auto nObj = srcDB.fetch(
+            node.getNodeHash().as_uint256(), node.getSeq()))
+        {
+#if RIPPLE_VERIFY_NODEOBJECT_KEYS
+            assert(nObj->getHash() == sha512Hash(makeSlice(nObj->getData())));
+#endif
+            incomplete_->pCache().canonicalize(
+                nObj->getHash(), nObj, true);
+            incomplete_->getBackend().store(nObj);
+            incomplete_->nCache().erase(nObj->getHash());
+            storeStats(nObj->getData().size());
+        }
+        else
+            error = true;
+        return !error;
+    };
+    // Store the state map
     if (ledger->stateMap().getHash().isNonZero())
     {
         if (!ledger->stateMap().isValid())
         {
             JLOG(j_.error()) <<
-                "invalid state map";
+                "source ledger seq " <<
+                std::to_string(ledger->info().seq) <<
+                " state map invalid";
             return false;
         }
         if (next && next->info().parentHash == ledger->info().hash)
@@ -402,25 +484,24 @@ DatabaseShardImp::copyLedger(std::shared_ptr<Ledger const> const& ledger)
         if (error)
             return false;
     }
-    // Batch the transaction map
+    // Store the transaction map
     if (ledger->info().txHash.isNonZero())
     {
         if (!ledger->txMap().isValid())
         {
             JLOG(j_.error()) <<
-                "invalid transaction map";
+                "source ledger seq " <<
+                std::to_string(ledger->info().seq) <<
+                " transaction map invalid";
             return false;
         }
         ledger->txMap().snapShot(false)->visitNodes(f);
         if (error)
             return false;
     }
-    // Store batch in shard
-    storeBatchInternal(batch, backend);
 
-    l.lock();
     auto sz {incomplete_->fileSize()};
-    if (!incomplete_->setStored(ledger, j_))
+    if (!incomplete_->setStored(ledger))
         return false;
     usedDiskSpace_ += (incomplete_->fileSize() - sz);
     if (incomplete_->complete())
@@ -432,25 +513,85 @@ DatabaseShardImp::copyLedger(std::shared_ptr<Ledger const> const& ledger)
     return true;
 }
 
+int
+DatabaseShardImp::getDesiredAsyncReadCount(std::uint32_t seq)
+{
+    auto const shardIndex = seqToShardIndex(seq);
+    {
+        std::lock_guard<std::mutex> l(m_);
+        auto it = complete_.find(shardIndex);
+        if (it != complete_.end())
+            return it->second->pCache().getTargetSize() / asyncDivider;
+        if (incomplete_ && incomplete_->index() == shardIndex)
+            return incomplete_->pCache().getTargetSize() / asyncDivider;
+    }
+    return cacheTargetSize / asyncDivider;
+}
+
+float
+DatabaseShardImp::getCacheHitRate()
+{
+    float sz, f {0};
+    {
+        std::lock_guard<std::mutex> l(m_);
+        sz = complete_.size();
+        for (auto const& e : complete_)
+            f += e.second->pCache().getHitRate();
+        if (incomplete_)
+        {
+            f += incomplete_->pCache().getHitRate();
+            ++sz;
+        }
+    }
+    return f / std::max(1.0f, sz);
+}
+
+void
+DatabaseShardImp::tune(int size, int age)
+{
+    std::lock_guard<std::mutex> l(m_);
+    for (auto const& e : complete_)
+    {
+        e.second->pCache().setTargetSize(size);
+        e.second->pCache().setTargetAge(age);
+        e.second->nCache().setTargetSize(size);
+        e.second->nCache().setTargetAge(age);
+    }
+    if (incomplete_)
+    {
+        incomplete_->pCache().setTargetSize(size);
+        incomplete_->pCache().setTargetAge(age);
+        incomplete_->nCache().setTargetSize(size);
+        incomplete_->nCache().setTargetAge(age);
+    }
+}
+
+void
+DatabaseShardImp::sweep()
+{
+    std::lock_guard<std::mutex> l(m_);
+    for (auto const& e : complete_)
+        e.second->pCache().sweep();
+    if (incomplete_)
+        incomplete_->pCache().sweep();
+}
+
 std::shared_ptr<NodeObject>
 DatabaseShardImp::fetchFrom(uint256 const& hash, std::uint32_t seq)
 {
+    Backend* backend;
     auto const shardIndex = seqToShardIndex(seq);
-    std::unique_lock<std::mutex> l(m_);
-    auto it = complete_.find(shardIndex);
-    if (it != complete_.end())
     {
-        auto& backend = it->second->getBackend();
-        l.unlock();
-        return fetchInternal(hash, backend);
+        std::unique_lock<std::mutex> l(m_);
+        auto it = complete_.find(shardIndex);
+        if (it != complete_.end())
+            backend = &it->second->getBackend();
+        else if (incomplete_ && incomplete_->index() == shardIndex)
+            backend = &incomplete_->getBackend();
+        else
+            return {};
     }
-    if (incomplete_ && incomplete_->index() == shardIndex)
-    {
-        auto& backend = incomplete_->getBackend();
-        l.unlock();
-        return fetchInternal(hash, backend);
-    }
-    return {};
+    return fetchInternal(hash, *backend);
 }
 
 // Lock must be held

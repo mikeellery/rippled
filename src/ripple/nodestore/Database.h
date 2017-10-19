@@ -24,6 +24,7 @@
 #include <ripple/basics/KeyCache.h>
 #include <ripple/core/Stoppable.h>
 #include <ripple/nodestore/Backend.h>
+#include <ripple/nodestore/impl/Tuning.h>
 #include <ripple/nodestore/Scheduler.h>
 #include <ripple/nodestore/NodeObject.h>
 
@@ -62,7 +63,7 @@ public:
         @param journal Destination for logging output.
     */
     Database(std::string name, Stoppable& parent, Scheduler& scheduler,
-        int readThreads, beast::Journal journal);
+        int readThreads, beast::Journal j);
 
     /** Destroy the node store.
         All pending operations are completed, pending writes flushed,
@@ -111,6 +112,7 @@ public:
         @param data The payload of the object. The caller's
                     variable is overwritten.
         @param hash The 256-bit hash of the payload data.
+        @param seq The sequence of the ledger the object belongs to.
 
         @return `true` if the object was stored?
     */
@@ -129,11 +131,9 @@ public:
         @param seq The sequence of the ledger where the object is stored.
         @return The object, or nullptr if it couldn't be retrieved.
     */
+    virtual
     std::shared_ptr<NodeObject>
-    fetch(uint256 const& hash, std::uint32_t seq)
-    {
-        return doFetch(hash, seq, false);
-    }
+    fetch(uint256 const& hash, std::uint32_t seq) = 0;
 
     /** Fetch an object without waiting.
         If I/O is required to determine whether or not the object is present,
@@ -143,12 +143,14 @@ public:
 
         @note This can be called concurrently.
         @param hash The key of the object to retrieve
+        @param seq The sequence of the ledger where the object is stored.
         @param object The object retrieved
         @return Whether the operation completed
     */
+    virtual
     bool
     asyncFetch(uint256 const& hash, std::uint32_t seq,
-        std::shared_ptr<NodeObject>& object);
+        std::shared_ptr<NodeObject>& object) = 0;
 
     /** Copies a ledger stored in a different database to this one.
 
@@ -165,73 +167,55 @@ public:
     waitReads();
 
     /** Get the maximum number of async reads the node store prefers.
+
+        @param seq The sequence of the ledger the object belongs to.
         @return The number of async reads preferred.
     */
+    virtual
     int
-    getDesiredAsyncReadCount();
+    getDesiredAsyncReadCount(std::uint32_t seq) = 0;
 
     /** Get the positive cache hits to total attempts ratio. */
+    virtual
     float
-    getCacheHitRate()
-    {
-        return pCache_.getHitRate();
-    }
+    getCacheHitRate() = 0;
 
     /** Set the maximum number of entries and maximum cache age for both caches.
 
         @param size Number of cache entries (0 = ignore)
         @param age Maximum cache age in seconds
     */
+    virtual
     void
-    tune(int size, int age);
+    tune(int size, int age) = 0;
 
     /** Remove expired entries from the positive and negative caches. */
+    virtual
     void
-    sweep()
-    {
-        pCache_.sweep();
-        nCache_.sweep();
-    }
+    sweep() = 0;
 
     /** Gather statistics pertaining to read and write activities.
-        Return the reads and writes, and total read and written bytes.
+
+        @return The total read and written bytes.
      */
     std::uint32_t
-    getStoreCount() const
-    {
-        return storeCount_;
-    }
+    getStoreCount() const { return storeCount_; }
 
     std::uint32_t
-    getFetchTotalCount() const
-    {
-        return fetchTotalCount_;
-    }
+    getFetchTotalCount() const { return fetchTotalCount_; }
 
     std::uint32_t
-    getFetchHitCount() const
-    {
-        return fetchHitCount_;
-    }
+    getFetchHitCount() const { return fetchHitCount_; }
 
     std::uint32_t
-    getStoreSize() const
-    {
-        return storeSz_;
-    }
+    getStoreSize() const { return storeSz_; }
 
     std::uint32_t
-    getFetchSize() const
-    {
-        return fetchSz_;
-    }
+    getFetchSize() const { return fetchSz_; }
 
     /** Return the number of files needed by our backend(s) */
     int
-    fdlimit() const
-    {
-        return fdLimit_;
-    }
+    fdlimit() const { return fdLimit_; }
 
     void
     onStop();
@@ -239,25 +223,33 @@ public:
 protected:
     beast::Journal j_;
     Scheduler& scheduler_;
-    int fdLimit_{ 0 };
-    TaggedCache<uint256, NodeObject> pCache_; // Positive cache
-    KeyCache<uint256> nCache_; // Negative cache
+    int fdLimit_ {0};
 
     void
     stopThreads();
 
     void
-    storeInternal(NodeObjectType type, Blob&& data,
-        uint256 const& hash, Backend& backend);
+    storeStats(size_t sz)
+    {
+        ++storeCount_;
+        storeSz_ += sz;
+    }
 
     void
-    storeBatchInternal(Batch& batch, Backend& backend);
+    asyncFetch(uint256 const& hash, std::uint32_t seq,
+        TaggedCache<uint256, NodeObject>& pCache,
+            KeyCache<uint256>& nCache);
 
     std::shared_ptr<NodeObject>
     fetchInternal(uint256 const& hash, Backend& backend);
 
     void
     importInternal(Database& source, Backend& dest);
+
+    std::shared_ptr<NodeObject>
+    doFetch(uint256 const& hash, std::uint32_t seq,
+        TaggedCache<uint256, NodeObject>& pCache,
+            KeyCache<uint256>& nCache, bool isAsync);
 
 private:
     std::atomic<std::uint32_t> storeCount_ {0};
@@ -269,8 +261,10 @@ private:
     std::mutex readLock_;
     std::condition_variable readCondVar_;
     std::condition_variable readGenCondVar_;
-    std::map<uint256, std::uint32_t> read_; // reads to do
-    std::pair<uint256, std::uint32_t> readLast_; // last read
+    std::map<uint256, std::tuple<std::uint32_t,
+        TaggedCache<uint256, NodeObject>*,
+            KeyCache<uint256>*>> read_; // reads to do
+    uint256 readLastHash_; // last read
     std::vector<std::thread> readThreads_;
     bool readShut_ {false};
     uint64_t readGen_ {0}; // current read generation
@@ -278,9 +272,6 @@ private:
     virtual
     std::shared_ptr<NodeObject>
     fetchFrom(uint256 const& hash, std::uint32_t seq) = 0;
-
-    std::shared_ptr<NodeObject>
-    doFetch(uint256 const& hash, std::uint32_t seq, bool isAsync);
 
     void
     threadEntry();

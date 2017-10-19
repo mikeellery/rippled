@@ -34,8 +34,10 @@ public:
 
     DatabaseNodeImp(std::string const& name,
         Scheduler& scheduler, int readThreads, Stoppable& parent,
-            std::unique_ptr<Backend> backend, beast::Journal journal)
-        : DatabaseNode(name, parent, scheduler, readThreads, journal)
+            std::unique_ptr<Backend> backend, beast::Journal j)
+        : DatabaseNode(name, parent, scheduler, readThreads, j)
+        , pCache_(name, cacheTargetSize, cacheTargetSeconds, stopwatch(), j)
+        , nCache_(name, stopwatch(), cacheTargetSize, cacheTargetSeconds)
         , backend_(std::move(backend))
     {
         assert(backend_);
@@ -73,16 +75,47 @@ public:
 
     void
     store(NodeObjectType type, Blob&& data,
-        uint256 const& hash, std::uint32_t seq) override
+        uint256 const& hash, std::uint32_t seq) override;
+
+    std::shared_ptr<NodeObject>
+    fetch(uint256 const& hash, std::uint32_t seq) override
     {
-        storeInternal(type, std::move(data), hash, *backend_.get());
+        return doFetch(hash, seq, pCache_, nCache_, false);
     }
+
+    bool
+    asyncFetch(uint256 const& hash, std::uint32_t seq,
+        std::shared_ptr<NodeObject>& object) override;
 
     bool
     copyLedger(std::shared_ptr<Ledger const> const& ledger) override;
 
+    int
+    getDesiredAsyncReadCount(std::uint32_t seq) override
+    {
+        // We prefer a client not fill our cache
+        // We don't want to push data out of the cache
+        // before it's retrieved
+        return pCache_.getTargetSize() / asyncDivider;
+    }
+
+    float
+    getCacheHitRate() override { return pCache_.getHitRate(); }
+
+    void
+    tune(int size, int age) override;
+
+    void
+    sweep() override;
+
 private:
-    // Persistent key/value storage.
+    // Positive cache
+    TaggedCache<uint256, NodeObject> pCache_;
+
+    // Negative cache
+    KeyCache<uint256> nCache_;
+
+    // Persistent key/value storage
     std::unique_ptr<Backend> backend_;
 
     std::shared_ptr<NodeObject>

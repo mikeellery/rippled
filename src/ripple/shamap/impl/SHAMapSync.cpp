@@ -316,7 +316,7 @@ SHAMap::getMissingNodes(int max, SHAMapSyncFilter* filter)
     assert (max > 0);
 
     MissingNodes mn (max, filter,
-        f_.db().getDesiredAsyncReadCount(),
+        f_.db().getDesiredAsyncReadCount(ledgerSeq_),
         f_.fullbelow().getGeneration());
 
     if (! root_->isInner () ||

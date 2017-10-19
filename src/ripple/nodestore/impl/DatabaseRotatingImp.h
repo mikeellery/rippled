@@ -27,22 +27,6 @@ namespace NodeStore {
 
 class DatabaseRotatingImp : public DatabaseRotating
 {
-private:
-    std::shared_ptr <Backend> writableBackend_;
-    std::shared_ptr <Backend> archiveBackend_;
-    mutable std::mutex rotateMutex_;
-
-    struct Backends {
-        std::shared_ptr <Backend> const& writableBackend;
-        std::shared_ptr <Backend> const& archiveBackend;
-    };
-
-    Backends getBackends() const
-    {
-        std::lock_guard <std::mutex> lock (rotateMutex_);
-        return Backends {writableBackend_, archiveBackend_};
-    }
-
 public:
     DatabaseRotatingImp() = delete;
     DatabaseRotatingImp(DatabaseRotatingImp const&) = delete;
@@ -52,7 +36,7 @@ public:
         Scheduler& scheduler, int readThreads, Stoppable& parent,
             std::shared_ptr <Backend> writableBackend,
                  std::shared_ptr <Backend> archiveBackend,
-                    beast::Journal journal);
+                    beast::Journal j);
 
     ~DatabaseRotatingImp() override
     {
@@ -103,19 +87,64 @@ public:
     }
 
     void store(NodeObjectType type, Blob&& data,
-        uint256 const& hash, std::uint32_t seq) override
+        uint256 const& hash, std::uint32_t seq) override;
+
+    std::shared_ptr<NodeObject>
+    fetch(uint256 const& hash, std::uint32_t seq) override
     {
-        storeInternal(type, std::move(data), hash, *getWritableBackend());
+        return doFetch(hash, seq, pCache_, nCache_, false);
     }
 
-    bool copyLedger(std::shared_ptr<Ledger const> const& ledger) override;
+    bool
+    asyncFetch(uint256 const& hash, std::uint32_t seq,
+        std::shared_ptr<NodeObject>& object) override;
 
-    TaggedCache <uint256, NodeObject>& getPositiveCache() override
+    bool
+    copyLedger(std::shared_ptr<Ledger const> const& ledger) override;
+
+    int
+    getDesiredAsyncReadCount(std::uint32_t seq) override
     {
-        return pCache_;
+        // We prefer a client not fill our cache
+        // We don't want to push data out of the cache
+        // before it's retrieved
+        return pCache_.getTargetSize() / asyncDivider;
     }
+
+    float
+    getCacheHitRate() override { return pCache_.getHitRate(); }
+
+    void
+    tune(int size, int age) override;
+
+    void
+    sweep() override;
+
+    TaggedCache<uint256, NodeObject>&
+    getPositiveCache() override { return pCache_; }
 
 private:
+    // Positive cache
+    TaggedCache<uint256, NodeObject> pCache_;
+
+    // Negative cache
+    KeyCache<uint256> nCache_;
+
+    std::shared_ptr <Backend> writableBackend_;
+    std::shared_ptr <Backend> archiveBackend_;
+    mutable std::mutex rotateMutex_;
+
+    struct Backends {
+        std::shared_ptr <Backend> const& writableBackend;
+        std::shared_ptr <Backend> const& archiveBackend;
+    };
+
+    Backends getBackends() const
+    {
+        std::lock_guard <std::mutex> lock (rotateMutex_);
+        return Backends {writableBackend_, archiveBackend_};
+    }
+
     std::shared_ptr<NodeObject> fetchFrom(
         uint256 const& hash, std::uint32_t seq) override;
 };

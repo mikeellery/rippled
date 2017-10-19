@@ -72,15 +72,14 @@ class Shard
 {
 public:
     explicit
-    Shard(std::uint32_t shardIndex);
+    Shard(std::uint32_t index, beast::Journal& j);
 
     bool
     open(Section config, Scheduler& scheduler,
-        boost::filesystem::path dir, beast::Journal& j);
+        boost::filesystem::path dir);
 
     bool
-    setStored(std::shared_ptr<Ledger const> const& l,
-        beast::Journal& j);
+    setStored(std::shared_ptr<Ledger const> const& l);
 
     boost::optional<std::uint32_t>
     prepare();
@@ -89,13 +88,19 @@ public:
     hasLedger(std::uint32_t seq) const;
 
     void
-    validate(Application& app, beast::Journal& j);
+    validate(Application& app);
 
     std::uint32_t
     index() const { return index_; }
 
     bool
     complete() const { return complete_; }
+
+    TaggedCache<uint256, NodeObject>&
+    pCache() { return pCache_; }
+
+    KeyCache<uint256>&
+    nCache() { return nCache_; }
 
     std::uint64_t
     fileSize() const { return fileSize_; }
@@ -139,8 +144,15 @@ private:
     // Last ledger sequence in this shard
     std::uint32_t const lastSeq_;
 
+    // Database positive cache
+    TaggedCache<uint256, NodeObject> pCache_;
+
+    // Database negative cache
+    KeyCache<uint256> nCache_;
+
     std::uint64_t fileSize_ {0};
     std::unique_ptr<Backend> backend_;
+    beast::Journal j_;
 
     // Path to database files
     boost::filesystem::path dir_;
@@ -159,13 +171,13 @@ private:
 
     bool
     valLedger(std::shared_ptr<Ledger const> const& l,
-        std::shared_ptr<Ledger const> const& next, beast::Journal& j);
+        std::shared_ptr<Ledger const> const& next);
 
     void
     updateFileSize();
 
     bool
-    saveControl(beast::Journal& j);
+    saveControl();
 };
 
 } // NodeStore

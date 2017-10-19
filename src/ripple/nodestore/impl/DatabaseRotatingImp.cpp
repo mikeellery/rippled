@@ -28,8 +28,10 @@ namespace NodeStore {
 DatabaseRotatingImp::DatabaseRotatingImp(
     std::string const& name, Scheduler& scheduler, int readThreads,
         Stoppable& parent, std::shared_ptr <Backend> writableBackend,
-            std::shared_ptr <Backend> archiveBackend, beast::Journal journal)
-    : DatabaseRotating(name, parent, scheduler, readThreads, journal)
+            std::shared_ptr <Backend> archiveBackend, beast::Journal j)
+    : DatabaseRotating(name, parent, scheduler, readThreads, j)
+    , pCache_(name, cacheTargetSize, cacheTargetSeconds, stopwatch(), j)
+    , nCache_(name, stopwatch(), cacheTargetSize, cacheTargetSeconds)
     , writableBackend_(writableBackend)
     , archiveBackend_(archiveBackend)
 {
@@ -49,6 +51,33 @@ DatabaseRotatingImp::rotateBackends(
     writableBackend_ = newBackend;
 
     return oldBackend;
+}
+
+void
+DatabaseRotatingImp::store(NodeObjectType type, Blob&& data,
+    uint256 const& hash, std::uint32_t seq)
+{
+#if RIPPLE_VERIFY_NODEOBJECT_KEYS
+    assert(hash == sha512Hash(makeSlice(data)));
+#endif
+    auto nObj = NodeObject::createObject(type, std::move(data), hash);
+    pCache_.canonicalize(hash, nObj, true);
+    getWritableBackend()->store(nObj);
+    nCache_.erase(hash);
+    storeStats(nObj->getData().size());
+}
+
+bool
+DatabaseRotatingImp::asyncFetch(uint256 const& hash,
+    std::uint32_t seq, std::shared_ptr<NodeObject>& object)
+{
+    // See if the object is in cache
+    object = pCache_.fetch(hash);
+    if (object || nCache_.touch_if_exists(hash))
+        return true;
+    // Otherwise post a read
+    Database::asyncFetch(hash, seq, pCache_, nCache_);
+    return false;
 }
 
 bool
@@ -117,8 +146,33 @@ DatabaseRotatingImp::copyLedger(
             return false;
     }
     // Store batch
-    storeBatchInternal(batch, *getWritableBackend());
+    for (auto& nObj : batch)
+    {
+#if RIPPLE_VERIFY_NODEOBJECT_KEYS
+        assert(nObj->getHash() == sha512Hash(makeSlice(nObj->getData())));
+#endif
+        pCache_.canonicalize(nObj->getHash(), nObj, true);
+        nCache_.erase(nObj->getHash());
+        storeStats(nObj->getData().size());
+    }
+    getWritableBackend()->storeBatch(batch);
     return true;
+}
+
+void
+DatabaseRotatingImp::tune(int size, int age)
+{
+    pCache_.setTargetSize(size);
+    pCache_.setTargetAge(age);
+    nCache_.setTargetSize(size);
+    nCache_.setTargetAge(age);
+}
+
+void
+DatabaseRotatingImp::sweep()
+{
+    pCache_.sweep();
+    nCache_.sweep();
 }
 
 std::shared_ptr<NodeObject>

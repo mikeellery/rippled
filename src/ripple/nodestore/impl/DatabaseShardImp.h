@@ -35,7 +35,7 @@ public:
 
     DatabaseShardImp(Application& app, std::string const& name,
         Stoppable& parent, Scheduler& scheduler, int readThreads,
-            Section const& config, beast::Journal journal);
+            Section const& config, beast::Journal j);
 
     ~DatabaseShardImp() override;
 
@@ -85,8 +85,27 @@ public:
     store(NodeObjectType type, Blob&& data,
         uint256 const& hash, std::uint32_t seq) override;
 
+    std::shared_ptr<NodeObject>
+    fetch(uint256 const& hash, std::uint32_t seq) override;
+
+    bool
+    asyncFetch(uint256 const& hash, std::uint32_t seq,
+        std::shared_ptr<NodeObject>& object) override;
+
     bool
     copyLedger(std::shared_ptr<Ledger const> const& ledger) override;
+
+    int
+    getDesiredAsyncReadCount(std::uint32_t seq) override;
+
+    float
+    getCacheHitRate() override;
+
+    void
+    tune(int size, int age) override;
+
+    void
+    sweep() override;
 
 private:
     Application& app_;
@@ -95,10 +114,14 @@ private:
     std::unique_ptr<Shard> incomplete_;
     Section const config_;
     boost::filesystem::path dir_;
+
+    // If new shards can be stored
     bool canAdd_ {true};
+
+    // Complete shard indexes
     std::string status_;
 
-    // Tells if backend type uses permanent storage
+    // If backend type uses permanent storage
     bool backed_;
 
     // Maximum disk space the DB can use (in bytes)

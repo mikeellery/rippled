@@ -18,7 +18,6 @@
 //==============================================================================
 
 #include <ripple/nodestore/Database.h>
-#include <ripple/nodestore/impl/Tuning.h>
 #include <ripple/basics/chrono.h>
 #include <ripple/beast/core/CurrentThreadName.h>
 #include <ripple/protocol/HashPrefix.h>
@@ -31,8 +30,6 @@ Database::Database(std::string name, Stoppable& parent,
     : Stoppable(name, parent)
     , j_(journal)
     , scheduler_(scheduler)
-    , pCache_(name, cacheTargetSize, cacheTargetSeconds, stopwatch(), journal)
-    , nCache_(name, stopwatch(), cacheTargetSize, cacheTargetSeconds)
 {
     while (readThreads-- > 0)
         readThreads_.emplace_back(&Database::threadEntry, this);
@@ -49,50 +46,14 @@ Database::~Database()
     stopThreads();
 }
 
-bool
-Database::asyncFetch(uint256 const& hash, std::uint32_t seq,
-    std::shared_ptr<NodeObject>& object)
-{
-    // See if the object is in cache
-    object = pCache_.fetch(hash);
-    if (object || nCache_.touch_if_exists(hash))
-        return true;
-    {
-        // Otherwise post a read
-        std::lock_guard <std::mutex> l(readLock_);
-        if (read_.emplace(hash, seq).second)
-            readCondVar_.notify_one();
-    }
-    return false;
-}
-
 void
 Database::waitReads()
 {
     std::unique_lock<std::mutex> l(readLock_);
-
     // Wake in two generations
     std::uint64_t const wakeGen = readGen_ + 2;
     while (! readShut_ && ! read_.empty() && (readGen_ < wakeGen))
         readGenCondVar_.wait(l);
-}
-
-int
-Database::getDesiredAsyncReadCount()
-{
-    // We prefer a client not fill our cache
-    // We don't want to push data out of the cache
-    // before it's retrieved
-    return pCache_.getTargetSize() / asyncDivider;
-}
-
-void
-Database::tune(int size, int age)
-{
-    pCache_.setTargetSize(size);
-    pCache_.setTargetAge(age);
-    nCache_.setTargetSize(size);
-    nCache_.setTargetAge(age);
 }
 
 void
@@ -122,37 +83,14 @@ Database::stopThreads()
 }
 
 void
-Database::storeInternal(NodeObjectType type, Blob&& data,
-    uint256 const& hash, Backend& backend)
+Database::asyncFetch(uint256 const& hash, std::uint32_t seq,
+    TaggedCache<uint256, NodeObject>& pCache,
+        KeyCache<uint256>& nCache)
 {
-    #if RIPPLE_VERIFY_NODEOBJECT_KEYS
-    assert(hash == sha512Hash(makeSlice(data)));
-    #endif
-
-    auto nObj = NodeObject::createObject(type, std::move(data), hash);
-    pCache_.canonicalize(hash, nObj, true);
-
-    backend.store(nObj);
-    ++storeCount_;
-    storeSz_ += nObj->getData().size();
-    nCache_.erase(hash);
-}
-
-void
-Database::storeBatchInternal(Batch& batch, Backend& backend)
-{
-    for (auto& nObj : batch)
-    {
-        #if RIPPLE_VERIFY_NODEOBJECT_KEYS
-        assert(nObj->getHash() == sha512Hash(makeSlice(nObj->getData())));
-        #endif
-
-        pCache_.canonicalize(nObj->getHash(), nObj, true);
-        ++storeCount_;
-        storeSz_ += nObj->getData().size();
-        nCache_.erase(nObj->getHash());
-    }
-    backend.storeBatch(batch);
+    // Post a read
+    std::lock_guard <std::mutex> l(readLock_);
+    if (read_.emplace(hash, std::make_tuple(seq, &pCache, &nCache)).second)
+        readCondVar_.notify_one();
 }
 
 std::shared_ptr<NodeObject>
@@ -166,7 +104,8 @@ Database::fetchInternal(uint256 const& hash, Backend& backend)
     }
     catch (std::exception const& e)
     {
-        JLOG(j_.error()) << "Exception, " << e.what();
+        JLOG(j_.fatal()) <<
+            "Exception, " << e.what();
         Rethrow();
     }
 
@@ -222,7 +161,9 @@ Database::importInternal(Database& source, Backend& dest)
 
 // Perform a fetch and report the time it took
 std::shared_ptr<NodeObject>
-Database::doFetch(uint256 const& hash, std::uint32_t seq, bool isAsync)
+Database::doFetch(uint256 const& hash, std::uint32_t seq,
+    TaggedCache<uint256, NodeObject>& pCache,
+        KeyCache<uint256>& nCache, bool isAsync)
 {
     FetchReport report;
     report.isAsync = isAsync;
@@ -232,8 +173,8 @@ Database::doFetch(uint256 const& hash, std::uint32_t seq, bool isAsync)
     auto const before = steady_clock::now();
 
     // See if the object already exists in the cache
-    auto nObj = pCache_.fetch(hash);
-    if (! nObj && ! nCache_.touch_if_exists(hash))
+    auto nObj = pCache.fetch(hash);
+    if (! nObj && ! nCache.touch_if_exists(hash))
     {
         // Try the database(s)
         report.wentToDisk = true;
@@ -242,15 +183,15 @@ Database::doFetch(uint256 const& hash, std::uint32_t seq, bool isAsync)
         if (! nObj)
         {
             // Just in case a write occurred
-            nObj = pCache_.fetch(hash);
+            nObj = pCache.fetch(hash);
             if (! nObj)
                 // We give up
-                nCache_.insert(hash);
+                nCache .insert(hash);
         }
         else
         {
             // Ensure all threads get the same object
-            pCache_.canonicalize(hash, nObj);
+            pCache.canonicalize(hash, nObj);
 
             // Since this was a 'hard' fetch, we will log it.
             JLOG(j_.trace()) <<
@@ -271,7 +212,10 @@ Database::threadEntry()
     beast::setCurrentThreadName("prefetch");
     while (true)
     {
-        std::pair<uint256, std::uint32_t> last;
+        uint256 lastHash;
+        std::uint32_t lastSeq;
+        TaggedCache<uint256, NodeObject>* lastPcache;
+        KeyCache<uint256>* lastNcache;
         {
             std::unique_lock<std::mutex> l(readLock_);
             while (! readShut_ && read_.empty())
@@ -284,23 +228,24 @@ Database::threadEntry()
                 break;
 
             // Read in key order to make the back end more efficient
-            auto it = read_.lower_bound(readLast_.first);
+            auto it = read_.lower_bound(readLastHash_);
             if (it == read_.end())
             {
                 it = read_.begin();
-
                 // A generation has completed
                 ++readGen_;
                 readGenCondVar_.notify_all();
             }
-
-            last = *it;
+            lastHash = it->first;
+            lastSeq = std::get<0>(it->second);
+            lastPcache = std::get<1>(it->second);
+            lastNcache = std::get<2>(it->second);
             read_.erase(it);
-            readLast_ = last;
+            readLastHash_ = lastHash;
         }
 
         // Perform the read
-        doFetch(last.first, last.second, true);
+        doFetch(lastHash, lastSeq, *lastPcache, *lastNcache, true);
     }
 }
 
