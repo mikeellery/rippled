@@ -368,8 +368,11 @@ PeerImp::hasLedger (uint256 const& hash, std::uint32_t seq) const
     if (std::find(recentLedgers_.begin(),
             recentLedgers_.end(), hash) != recentLedgers_.end())
         return true;
-    return seq != 0 &&
-        boost::icl::contains(shards_, NodeStore::seqToShardIndex(seq));
+    return
+        seq != 0 &&
+        app_.getShardStore() &&
+        boost::icl::contains(
+            shards_, app_.getShardStore()->seqToShardIndex(seq));
 }
 
 void

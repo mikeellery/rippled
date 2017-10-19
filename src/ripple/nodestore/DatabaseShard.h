@@ -31,18 +31,6 @@
 namespace ripple {
 namespace NodeStore {
 
-/** Finds a shard index containing the ledger sequence
-
-    @param seq The ledger sequence
-    @return The shard index
-*/
-constexpr
-std::uint32_t
-seqToShardIndex(std::uint32_t const seq)
-{
-    return (seq - 1) / ledgersPerShard;
-}
-
 /** A collection of historical shards
 */
 class DatabaseShard : public Database
@@ -127,6 +115,14 @@ public:
     virtual
     void
     validate() = 0;
+
+    /** returns shard index for a given sequence number
+
+        @param seq sequence number to be found in the returned shard
+    */
+    virtual
+    std::uint32_t
+    seqToShardIndex(std::uint32_t seq) = 0;
 };
 
 }

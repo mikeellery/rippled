@@ -34,32 +34,90 @@
 
 namespace ripple {
 namespace NodeStore {
+
 namespace detail {
 
-// Return the first ledger sequence of the shard index
-constexpr
-std::uint32_t
-firstSeq(std::uint32_t const shardIndex)
-{
-    return 1 + (shardIndex * ledgersPerShard);
+/** this is a system constant/invariant: **/
+constexpr static std::uint32_t genesisSeq {32570u};
+
 }
 
-// Return the last ledger sequence of the shard index
-constexpr
-std::uint32_t
-lastSeq(std::uint32_t const shardIndex)
+class ShardConfig
 {
-    return (shardIndex + 1) * ledgersPerShard;
-}
+    std::uint32_t ledgersPerShard_;
+    std::uint32_t genesisShardIndex_;
+    std::uint32_t genesisNumLedgers_;
+    std::uint64_t avgShardSz_;
 
-static constexpr auto genesisShardIndex = seqToShardIndex(genesisSeq);
-static constexpr auto genesisNumLedgers = ledgersPerShard -
-    (genesisSeq - firstSeq(genesisShardIndex));
+public:
 
-// Average disk space a shard requires (in bytes)
-constexpr std::uint64_t avgShardSize_ = ledgersPerShard * (1024ull * 256);
+    /** The number of ledgers stored in a shard
+     *  default: 16k
+     *  This value should only be changed for unit tests
+     **/
+    explicit ShardConfig(std::uint32_t lps = 16384u)
+    {
+        setLedgersPerShard(lps);
+    }
 
-} // detail
+    auto inline genesisShardIndex() const { return genesisShardIndex_; }
+    auto inline genesisNumLedgers() const { return genesisNumLedgers_; }
+    auto inline ledgersPerShard() const { return ledgersPerShard_; }
+    auto inline averageShardSize() const { return avgShardSz_; }
+
+    inline void setLedgersPerShard(std::uint32_t lps)
+    {
+        // this is currently only called during init, so
+        // thread safety of the object state is not critical
+        // (thus no locking needed here at this time)
+        ledgersPerShard_ = lps;
+        genesisShardIndex_ = seqToShardIndex(detail::genesisSeq);
+        genesisNumLedgers_ =
+            ledgersPerShard_ - (detail::genesisSeq - firstSeq(genesisShardIndex_));
+        // Average disk space a shard requires (in bytes)
+        avgShardSz_  = ledgersPerShard_ * (192 * 1024);
+    }
+
+    inline void setAverageShardSize(std::uint64_t avs)
+    {
+        avgShardSz_ = avs;
+    }
+
+    // Return the first ledger sequence of the shard index
+    inline
+    std::uint32_t
+    firstSeq(std::uint32_t const shardIndex) const
+    {
+        return 1 + (shardIndex * ledgersPerShard_);
+    }
+
+    /** Finds a shard index containing the ledger sequence
+
+        @param seq The ledger sequence
+        @return The shard index
+    */
+    inline
+    std::uint32_t
+    seqToShardIndex(std::uint32_t const seq) const
+    {
+        return (seq - 1) / ledgersPerShard_;
+    }
+
+    // Return the last ledger sequence of the shard index
+    inline
+    std::uint32_t
+    lastSeq(std::uint32_t const shardIndex) const
+    {
+        return (shardIndex + 1) * ledgersPerShard_;
+    }
+
+    inline
+    auto genesisShardIndex()
+    {
+        return seqToShardIndex(detail::genesisSeq);
+    }
+};
+
 
 /* A range of historical ledgers backed by a nodestore.
    Shards are indexed and store `ledgersPerShard`.
@@ -72,7 +130,7 @@ class Shard
 {
 public:
     explicit
-    Shard(std::uint32_t index, beast::Journal& j);
+    Shard(ShardConfig cfg, std::uint32_t index, beast::Journal& j);
 
     bool
     open(Section config, Scheduler& scheduler,
@@ -169,6 +227,7 @@ private:
     // Used as an optimization for visitDifferences
     std::shared_ptr<Ledger const> lastStored_;
 
+    ShardConfig shardConfig_;
     bool
     valLedger(std::shared_ptr<Ledger const> const& l,
         std::shared_ptr<Ledger const> const& next);

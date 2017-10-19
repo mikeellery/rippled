@@ -1,4 +1,3 @@
-//------------------------------------------------------------------------------
 /*
     This file is part of rippled: https://github.com/ripple/rippled
     Copyright (c) 2012, 2013 Ripple Labs Inc.
@@ -50,6 +49,11 @@ bool
 DatabaseShardImp::init()
 {
     using namespace boost::filesystem;
+
+    auto lps = get<std::uint32_t>(config_, "ledgers_per_shard", 0);
+    if (lps)
+        shardConfig_.setLedgersPerShard(lps);
+
     {
         // Validate backend
         Factory* f;
@@ -91,9 +95,9 @@ DatabaseShardImp::init()
         if (!std::all_of(dirName.begin(), dirName.end(), ::isdigit))
             continue;
         auto shardIndex = std::stoul(dirName);
-        if (shardIndex < detail::genesisShardIndex)
+        if (shardIndex < shardConfig_.genesisShardIndex())
             continue;
-        auto shard = std::make_unique<Shard>(shardIndex, j_);
+        auto shard = std::make_unique<Shard>(shardConfig_, shardIndex, j_);
         if (!shard->open(config_, scheduler_, dir_))
             return false;
         usedDiskSpace_ += shard->fileSize();
@@ -118,7 +122,7 @@ DatabaseShardImp::init()
             JLOG(j_.warn()) << "Insufficient disk space";
         }
         fdLimit_ = 1 + (fdLimit_ *
-            std::max<std::uint64_t>(1, maxDiskSpace_ / avgShardSz_));
+            std::max<std::uint64_t>(1, maxDiskSpace_ / shardConfig_.averageShardSize()));
     }
     else
         updateStats();
@@ -136,14 +140,14 @@ DatabaseShardImp::prepare(std::uint32_t validLedgerSeq)
     if (backed_)
     {
         // Create a new shard to acquire
-        if (usedDiskSpace_ + avgShardSz_ > maxDiskSpace_)
+        if (usedDiskSpace_ + shardConfig_.averageShardSize() > maxDiskSpace_)
         {
             JLOG(j_.debug()) <<
                 "Maximum size reached";
             canAdd_ = false;
             return boost::none;
         }
-        if (avgShardSz_ > boost::filesystem::space(dir_).free)
+        if (shardConfig_.averageShardSize() > boost::filesystem::space(dir_).free)
         {
             JLOG(j_.warn()) <<
                 "Insufficient disk space";
@@ -163,7 +167,7 @@ DatabaseShardImp::prepare(std::uint32_t validLedgerSeq)
     // With every new shard, clear the caches.
     app_.shardFamily()->fullbelow().clear();
     app_.shardFamily()->treecache().clear();
-    incomplete_ = std::make_unique<Shard>(*shardIndexToAdd, j_);
+    incomplete_ = std::make_unique<Shard>(shardConfig_, *shardIndexToAdd, j_);
     if (!incomplete_->open(config_, scheduler_, dir_))
     {
         incomplete_.reset();
@@ -242,10 +246,15 @@ DatabaseShardImp::setStored(std::shared_ptr<Ledger const> const& ledger)
         return;
     }
 
-    auto sz {incomplete_->fileSize()};
+    auto sza {incomplete_->fileSize()};
     if (!incomplete_->setStored(ledger))
         return;
-    usedDiskSpace_ += (incomplete_->fileSize() - sz);
+    auto szb {incomplete_->fileSize()};
+    if(szb > sza)
+        usedDiskSpace_ += (szb - sza);
+    else if(szb < sza)
+        usedDiskSpace_ -= std::min(sza - szb, usedDiskSpace_);
+
     if (incomplete_->complete())
     {
         complete_.emplace(incomplete_->index(), std::move(incomplete_));
@@ -500,10 +509,15 @@ DatabaseShardImp::copyLedger(std::shared_ptr<Ledger const> const& ledger)
             return false;
     }
 
-    auto sz {incomplete_->fileSize()};
+    auto sza {incomplete_->fileSize()};
     if (!incomplete_->setStored(ledger))
         return false;
-    usedDiskSpace_ += (incomplete_->fileSize() - sz);
+    auto szb {incomplete_->fileSize()};
+    if(szb > sza)
+        usedDiskSpace_ += (szb - sza);
+    else if(szb < sza)
+        usedDiskSpace_ -= std::min(sza - szb, usedDiskSpace_);
+
     if (incomplete_->complete())
     {
         complete_.emplace(incomplete_->index(), std::move(incomplete_));
@@ -598,8 +612,8 @@ DatabaseShardImp::fetchFrom(uint256 const& hash, std::uint32_t seq)
 boost::optional<std::uint32_t>
 DatabaseShardImp::findShardIndexToAdd(std::uint32_t validLedgerSeq)
 {
-    auto maxShardIndex = seqToShardIndex(validLedgerSeq);
-    if (validLedgerSeq != detail::lastSeq(maxShardIndex))
+    auto maxShardIndex = shardConfig_.seqToShardIndex(validLedgerSeq);
+    if (validLedgerSeq != shardConfig_.lastSeq(maxShardIndex))
         --maxShardIndex;
 
     auto numShards = complete_.size() + (incomplete_ ? 1 : 0);
@@ -615,7 +629,7 @@ DatabaseShardImp::findShardIndexToAdd(std::uint32_t validLedgerSeq)
         // Find the available indexes and select one at random
         std::vector<std::uint32_t> available;
         available.reserve(maxShardIndex - numShards + 1);
-        for (std::uint32_t i = detail::genesisShardIndex;
+        for (std::uint32_t i = shardConfig_.genesisShardIndex();
             i <= maxShardIndex; ++i)
         {
             if (complete_.find(i) == complete_.end() &&
@@ -632,7 +646,7 @@ DatabaseShardImp::findShardIndexToAdd(std::uint32_t validLedgerSeq)
     // chances of running more than 30 times is less than 1 in a billion
     for (int i = 0; i < 40; ++i)
     {
-        auto const r = rand_int(detail::genesisShardIndex, maxShardIndex);
+        auto const r = rand_int(shardConfig_.genesisShardIndex(), maxShardIndex);
         if (complete_.find(r) == complete_.end() &&
             (!incomplete_ || incomplete_->index() != r))
                 return r;
@@ -675,7 +689,8 @@ DatabaseShardImp::updateStats()
             avgShardSz += it->second->fileSize();
         }
         if (backed_)
-            avgShardSz_ = avgShardSz / complete_.size();
+            shardConfig_.setAverageShardSize(
+                shardConfig_.averageShardSize() / complete_.size());
     }
     else if(incomplete_)
         filesPerShard = incomplete_->fdlimit();
@@ -699,8 +714,14 @@ DatabaseShardImp::updateStats()
             JLOG(j_.warn()) <<
                 "Max Shard Store size exceeds remaining free disk space";
         }
-        fdLimit_ += (filesPerShard * (sz / avgShardSz_));
+        fdLimit_ += (filesPerShard * (sz / shardConfig_.averageShardSize()));
     }
+}
+
+std::uint32_t
+DatabaseShardImp::seqToShardIndex(std::uint32_t seq)
+{
+    return shardConfig_.seqToShardIndex(seq);
 }
 
 } // NodeStore

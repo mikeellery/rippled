@@ -50,7 +50,7 @@ public:
         {
             std::unique_ptr <Database> src = Manager::instance().make_Database (
                 "test", scheduler, 2, parent, srcParams, j);
-            storeBatch (*this, *src, batch);
+            storeBatch (*src, batch);
         }
 
         SeqBatch copy;

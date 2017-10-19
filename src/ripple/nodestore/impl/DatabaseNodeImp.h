@@ -21,6 +21,7 @@
 #define RIPPLE_NODESTORE_DATABASENODEIMP_H_INCLUDED
 
 #include <ripple/nodestore/DatabaseNode.h>
+#include <ripple/basics/chrono.h>
 
 namespace ripple {
 namespace NodeStore {

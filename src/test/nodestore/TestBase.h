@@ -28,12 +28,14 @@
 #include <ripple/beast/utility/rngfill.h>
 #include <ripple/beast/utility/temp_dir.h>
 #include <ripple/beast/xor_shift_engine.h>
+#include <ripple/core/ConfigSections.h>
 #include <ripple/nodestore/Backend.h>
 #include <ripple/nodestore/DummyScheduler.h>
 #include <ripple/nodestore/Manager.h>
 #include <ripple/nodestore/Types.h>
 #include <ripple/nodestore/DatabaseShard.h>
 #include <ripple/nodestore/impl/DatabaseShardImp.h>
+#include <ripple/nodestore/impl/Shard.h>
 #include <boost/algorithm/string.hpp>
 #include <iomanip>
 #include <algorithm>
@@ -161,17 +163,9 @@ public:
         return result;
     }
 
-    // Store a batch in a backend
-    static void storeBatch (beast::unit_test::suite&, Backend& backend, SeqBatch& batch)
-    {
-        for (auto& b : batch)
-        {
-            backend.store (b.second);
-        }
-    }
-
     // Get a copy of a batch in a backend
-    void fetchCopyOfBatch (Backend& backend, SeqBatch* pCopy, SeqBatch const& batch)
+    void fetchCopyOfBatch (
+        Backend& backend, SeqBatch* pCopy, SeqBatch const& batch)
     {
         pCopy->clear ();
         pCopy->reserve (batch.size ());
@@ -207,8 +201,16 @@ public:
         }
     }
 
+    void storeBatch(Backend& backend, SeqBatch& batch)
+    {
+        for (auto& b : batch)
+        {
+            backend.store (b.second);
+        }
+    }
+
     // Store all objects in a batch
-    static void storeBatch (beast::unit_test::suite&, Database& db, SeqBatch& batch)
+    void storeBatch (Database& db, SeqBatch& batch)
     {
         for (auto& b : batch)
         {
@@ -223,23 +225,55 @@ public:
         }
     }
 
-    static void storeBatch (beast::unit_test::suite& tc, DatabaseShard& db, SeqBatch& batch)
+    void storeBatch (DatabaseShard&, SeqBatch&)
     {
-        ripple::test::jtx::Env env{tc};
+        assert(false);
+    }
+
+    void storeBatch (
+        Backend&,
+        SeqBatch&,
+        beast::unit_test::suite&,
+        ripple::test::jtx::Env*,
+        ripple::NodeStore::ShardConfig const&)
+    {
+        assert(false);
+    }
+
+    void storeBatch (
+        Database&,
+        SeqBatch&,
+        beast::unit_test::suite&,
+        ripple::test::jtx::Env*,
+        ripple::NodeStore::ShardConfig const&)
+    {
+        assert(false);
+    }
+
+    void storeBatch (
+        DatabaseShard& db,
+        SeqBatch& batch,
+        beast::unit_test::suite& tc,
+        ripple::test::jtx::Env* penv,
+        ripple::NodeStore::ShardConfig const& scfg)
+    {
         std::uint32_t lastSeq {0u};
         std::uint32_t seq {0u};
+        std::uint32_t id {0u};
+        int transitions {0};
         for (auto& b : batch)
         {
-            auto stat = db.prepare(ledgersPerShard * 256);
+            auto stat = db.prepare(scfg.ledgersPerShard() * 256);
             if (! stat)
                 throw std::runtime_error("prepare failed");
             seq = *stat;
             if (lastSeq != 0 && seq != (lastSeq-1))
             {
                 tc.log << "switched shard from " <<
-                    seqToShardIndex(lastSeq) << " (" << lastSeq << ")" <<
-                    " to " << seqToShardIndex(seq) << " (" << seq << ")" <<
+                    scfg.seqToShardIndex(lastSeq) << " (" << lastSeq << ")" <<
+                    " to " << scfg.seqToShardIndex(seq) << " (" << seq << ")" <<
                     std::endl;
+                transitions++;
             }
 
             std::shared_ptr<NodeObject> const object (b.second);
@@ -252,16 +286,31 @@ public:
                       seq);
 
             Config config;
-            std::shared_ptr<Ledger const> const lger =
+            std::shared_ptr<Ledger> lger =
                 std::make_shared<Ledger> (
                     seq,
-                    env.app().timeKeeper().closeTime(),
+                    penv->app().timeKeeper().closeTime(),
                     config,
-                    env.app().family());
+                    penv->app().family());
+            lger->stateMap().setLedgerSeq(seq);
+            lger->txMap().setLedgerSeq(seq);
+
+            id++;
+            auto sle = std::make_shared<SLE>(ltACCOUNT_ROOT, uint256(id));
+            sle->setFieldU32(sfSequence, 1);
+            lger->rawInsert(sle);
+            lger->stateMap().flushDirty(hotACCOUNT_NODE, seq);
+
+            lger->setImmutable(config);
             db.setStored(lger);
 
             lastSeq = b.first = seq;
         }
+        auto expectedTransitions = (batch.size() - 1) / scfg.ledgersPerShard();
+        std::stringstream msg;
+        msg << "saw " << transitions << " transitions, expected " <<
+            expectedTransitions;
+        BEAST_EXPECTS(transitions == expectedTransitions, msg.str());
     }
 
     // Fetch all the hashes in one batch, into another batch.
@@ -282,15 +331,22 @@ public:
         }
     }
 
+
     template <class T>
-    static
-    std::unique_ptr<T> factory(
-        Scheduler&, Stoppable&, Section&, beast::Journal);
+    std::pair<
+        std::unique_ptr<T, std::function<void(T*)>>,
+        std::unique_ptr<ripple::test::jtx::Env>>
+    factory(
+        Scheduler&,
+        Stoppable&,
+        Section&,
+        beast::Journal);
 
     template <class T>
     void testNodeStore (std::string const& type,
                         int numObjectsToTest = 2000,
-                        std::uint64_t const seedValue = 50u)
+                        ShardConfig scfg = ShardConfig{},
+                        std::uint64_t seedValue = 50u)
     {
         DummyScheduler scheduler;
         RootStoppable parent ("TestRootStoppable");
@@ -307,6 +363,8 @@ public:
         Section params;
         params.set ("type", type);
         params.set ("path", node_db.path());
+        if (std::is_same<T, DatabaseShard>::value)
+            params.set ("ledgers_per_shard", std::to_string(scfg.ledgersPerShard()));
 
         beast::xor_shift_engine rng {seedValue};
 
@@ -315,16 +373,19 @@ public:
 
         {
             // Open the database
-            std::unique_ptr <T> db = factory<T>(
-                scheduler, parent, params, j);
+            //std:pair<std::unique_ptr <T>, std::unique_ptr <ripple::test::jtx::Env>> fret =
+            auto fret =
+                factory<T>(scheduler, parent, params, j);
 
-            // Write the batch
-            storeBatch (*this, *db, batch);
+            if (std::is_same<T, DatabaseShard>::value)
+                storeBatch (*fret.first, batch, *this, fret.second.get(), scfg);
+            else
+                storeBatch (*fret.first, batch);
 
             {
                 // Read it back in
                 SeqBatch copy;
-                fetchCopyOfBatch (*db, &copy, batch);
+                fetchCopyOfBatch (*fret.first, &copy, batch);
                 BEAST_EXPECT(areBatchesEqual (batch, copy));
             }
 
@@ -335,7 +396,7 @@ public:
                     batch.end(),
                     rng);
                 SeqBatch copy;
-                fetchCopyOfBatch (*db, &copy, batch);
+                fetchCopyOfBatch (*fret.first, &copy, batch);
                 BEAST_EXPECT(areBatchesEqual (batch, copy));
             }
         }
@@ -343,12 +404,13 @@ public:
         if (type != "memory")
         {
             // Re-open the database without the ephemeral DB
-            std::unique_ptr <T> db = factory<T>(
-                scheduler, parent, params, j);
+            //std:pair<std::unique_ptr <T>, std::unique_ptr <ripple::test::jtx::Env>> fret =
+            auto fret =
+                factory<T>(scheduler, parent, params, j);
 
             // Read it back in
             SeqBatch copy;
-            fetchCopyOfBatch (*db, &copy, batch);
+            fetchCopyOfBatch (*fret.first, &copy, batch);
 
             // Canonicalize the source and destination batches
             std::sort (batch.begin (), batch.end (), LessThan{});
@@ -360,41 +422,77 @@ public:
 };
 
 template <>
-inline std::unique_ptr<Backend> TestBase::factory(
+inline
+std::pair<
+    std::unique_ptr<Backend, std::function<void(Backend*)>>,
+    std::unique_ptr<ripple::test::jtx::Env>>
+TestBase::factory(
     Scheduler& scheduler,
     Stoppable&,
     Section& params,
     beast::Journal j)
 {
-    return Manager::instance().make_Backend (
-        params, scheduler, j);
+    auto p = Manager::instance().make_Backend (params, scheduler, j);
+    return std::make_pair(
+       std::unique_ptr<Backend, std::function<void(Backend*)>>(
+            p.release(), [](Backend* p){delete p;}),
+        nullptr);
 }
 
 template <>
-inline std::unique_ptr<Database> TestBase::factory(
+inline
+std::pair<
+    std::unique_ptr<Database, std::function<void(Database*)>>,
+    std::unique_ptr<ripple::test::jtx::Env>>
+TestBase::factory(
     Scheduler& scheduler,
     Stoppable& parent,
     Section& params,
     beast::Journal j)
 {
-    return Manager::instance().make_Database (
+    auto p = Manager::instance().make_Database (
         "test", scheduler, 2, parent, params, j);
+    return std::make_pair(
+        std::unique_ptr<Database, std::function<void(Database*)>>(
+            p.release(), [](Database* p){delete p;}),
+        nullptr);
 }
 
 template <>
-inline std::unique_ptr<DatabaseShard> TestBase::factory(
+inline
+std::pair<
+    std::unique_ptr<DatabaseShard, std::function<void(DatabaseShard*)>>,
+    std::unique_ptr<ripple::test::jtx::Env>>
+TestBase::factory(
     Scheduler& scheduler,
     Stoppable& parent,
     Section& params,
     beast::Journal j)
 {
-    params.set ("max_size_gb", "4");
-    std::unique_ptr<DatabaseShard> ptr =
-        std::make_unique<NodeStore::DatabaseShardImp>(
-            "test", parent, scheduler, 2, params, j);
-    if (! ptr->init())
-        throw std::runtime_error("init failed");
-    return ptr;
+    auto penv = std::make_unique<ripple::test::jtx::Env>(
+        *this, ripple::test::jtx::envconfig ([&params](std::unique_ptr<Config> cfg)
+        {
+            cfg->overwrite
+                (ConfigSection::shardDatabase (), "type",
+                 *params.get<std::string>("type"));
+            cfg->overwrite
+                (ConfigSection::shardDatabase (), "path",
+                 *params.get<std::string>("path"));
+            cfg->overwrite
+                (ConfigSection::shardDatabase (), "ledgers_per_shard",
+                 *params.get<std::string>("ledgers_per_shard"));
+            cfg->overwrite
+                (ConfigSection::shardDatabase (), "max_size_gb", "4");
+            return cfg;
+        }));
+
+    // yes, this is a no-op deleter. This is so that we can still return a
+    // unique_ptr type but we don't actually own this pointer, the Env does
+    // and will free it when it deletes via its own unique_ptr.
+    std::unique_ptr<DatabaseShard, std::function<void(DatabaseShard*)>> dp {
+        penv->app().getShardStore(), [](DatabaseShard*){} };
+
+    return std::make_pair (std::move(dp), std::move(penv));
 }
 
 }

@@ -22,6 +22,7 @@
 #include <ripple/app/ledger/LedgerToJson.h>
 #include <ripple/core/ConfigSections.h>
 #include <ripple/protocol/HashPrefix.h>
+#include <ripple/nodestore/impl/Shard.h>
 #include <algorithm>
 
 namespace ripple {
@@ -63,13 +64,14 @@ class DatabaseShard_test : public TestBase
         }
 
         // Add data to the tx map
-        for (std::uint64_t id = 1; id <= 16; ++id)
+        for (std::uint32_t id = 1; id <= 16; ++id)
         {
             auto s = std::make_shared<Serializer>();
-            auto tx = STTx { ttPAYMENT, [](auto& t) {
+            auto tx = STTx { ttPAYMENT, [id](auto& t) {
                     t.setFieldAmount(sfAmount, 42);
                     t.setAccountID(sfAccount, AccountID(2));
                     t.setAccountID(sfDestination, AccountID(3));
+                    t.setFieldU32(sfSequence, id);
                 }};
             tx.add(*s);
             l->rawTxInsert(
@@ -97,11 +99,13 @@ class DatabaseShard_test : public TestBase
         return l;
     }
 
-    void testShardStoreAndFetch()
+    void testShardStoreAndFetch(
+        ripple::NodeStore::ShardConfig const& scfg)
     {
         using namespace test::jtx;
+        testcase("Store and Fetch, sharddb");
         beast::temp_dir dbpath;
-        Env env {*this, envconfig ([&dbpath](std::unique_ptr<Config> cfg)
+        Env env {*this, envconfig ([&](std::unique_ptr<Config> cfg)
             {
                 cfg->overwrite
                     (ConfigSection::shardDatabase (), "type", "nudb");
@@ -109,13 +113,16 @@ class DatabaseShard_test : public TestBase
                     (ConfigSection::shardDatabase (), "path", dbpath.path());
                 cfg->overwrite
                     (ConfigSection::shardDatabase (), "max_size_gb", "4");
+                cfg->overwrite
+                    (ConfigSection::shardDatabase (), "ledgers_per_shard",
+                        std::to_string(scfg.ledgersPerShard()));
                 return cfg;
             })};
 
         auto dbs = env.app().getShardStore();
         if (! BEAST_EXPECT(dbs))
             return;
-        auto stat = dbs->prepare(ledgersPerShard * 256);
+        auto stat = dbs->prepare(scfg.ledgersPerShard() * 256);
         if (! BEAST_EXPECT(stat))
             return;
 
@@ -128,7 +135,7 @@ class DatabaseShard_test : public TestBase
         if (! BEAST_EXPECT(dbs->copyLedger(l)))
             return;
 
-        auto fetched = dbs->fetchLedger(env.app(), l->info().hash, *stat);
+        auto fetched = dbs->fetchLedger(l->info().hash, *stat);
         if(! BEAST_EXPECT(fetched))
             return;
 
@@ -171,7 +178,7 @@ class DatabaseShard_test : public TestBase
                 return false;
 
             auto nDst = env.app().getShardStore()->fetch(
-                node.getNodeHash().as_uint256(), node.getSeq());
+                node.getNodeHash().as_uint256(), l->info().seq);
             if (! BEAST_EXPECT(nDst))
                 return false;
 
@@ -187,21 +194,26 @@ class DatabaseShard_test : public TestBase
 public:
     void run ()
     {
-        testShardStoreAndFetch();
+        ripple::NodeStore::ShardConfig cfg {512u};
+        auto lps = cfg.ledgersPerShard();
 
-        testNodeStore<DatabaseShard> ("nudb");
-        testNodeStore<DatabaseShard> ("nudb", ledgersPerShard);
-        testNodeStore<DatabaseShard> ("nudb", ledgersPerShard + 1);
-        // TODO - enable these if/when ledgersPerShard is made
-        // configurable (so can be smaller for the test)
-        // testNodeStore<DatabaseShard> ("nudb", ledgersPerShard * 2 - 1);
-        // testNodeStore<DatabaseShard> ("nudb", ledgersPerShard * 2);
+        testShardStoreAndFetch(cfg);
+
+        testNodeStore<DatabaseShard> ("nudb"); //default config used
+        testNodeStore<DatabaseShard> ("nudb", lps, cfg);
+        testNodeStore<DatabaseShard> ("nudb", lps + 1, cfg);
+        testNodeStore<DatabaseShard> ("nudb", lps * 2 - 1, cfg);
+        testNodeStore<DatabaseShard> ("nudb", lps * 2, cfg);
+        testNodeStore<DatabaseShard> ("nudb", lps * 2 + 1, cfg);
+        testNodeStore<DatabaseShard> ("nudb", lps * 5, cfg);
     #if RIPPLE_ROCKSDB_AVAILABLE
-        testNodeStore<DatabaseShard> ("rocksdb");
-        testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard);
-        testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard + 1);
-        // testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard * 2 - 1);
-        // testNodeStore<DatabaseShard> ("rocksdb", ledgersPerShard * 2);
+        testNodeStore<DatabaseShard> ("rocksdb"); //default config used
+        testNodeStore<DatabaseShard> ("rocksdb", lps, cfg);
+        testNodeStore<DatabaseShard> ("rocksdb", lps + 1, cfg);
+        testNodeStore<DatabaseShard> ("rocksdb", lps * 2 - 1, cfg);
+        testNodeStore<DatabaseShard> ("rocksdb", lps * 2, cfg);
+        testNodeStore<DatabaseShard> ("rocksdb", lps * 2 + 1, cfg);
+        testNodeStore<DatabaseShard> ("rocksdb", lps * 5, cfg);
     #endif
     }
 };

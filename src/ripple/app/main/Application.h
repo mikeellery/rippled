@@ -35,7 +35,7 @@ namespace ripple {
 
 namespace unl { class Manager; }
 namespace Resource { class Manager; }
-namespace NodeStore { class Database; class DatabaseShard; }
+namespace NodeStore { class Database; class DatabaseShard;}
 
 // VFALCO TODO Fix forward declares required for header dependency loops
 class AmendmentTable;

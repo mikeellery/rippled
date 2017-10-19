@@ -111,6 +111,9 @@ public:
     void
     sweep() override;
 
+    std::uint32_t
+    seqToShardIndex(std::uint32_t seq) override;
+
 private:
     Application& app_;
     mutable std::mutex m_;
@@ -124,6 +127,7 @@ private:
 
     // Complete shard indexes
     std::string status_;
+    ShardConfig shardConfig_;
 
     // If backend type uses permanent storage
     bool backed_;
@@ -133,9 +137,6 @@ private:
 
     // Disk space used to store the shards (in bytes)
     std::uint64_t usedDiskSpace_ {0};
-
-    // Average disk space a shard requires (in bytes)
-    std::uint64_t avgShardSz_ {ledgersPerShard * (192 * 1024)};
 
     std::shared_ptr<NodeObject>
     fetchFrom(uint256 const& hash, std::uint32_t seq) override;

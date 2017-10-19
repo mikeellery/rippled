@@ -25,17 +25,18 @@
 namespace ripple {
 namespace NodeStore {
 
-Shard::Shard(std::uint32_t index, beast::Journal& j)
+Shard::Shard(ShardConfig cfg, std::uint32_t index, beast::Journal& j)
     : index_ {index}
-    , firstSeq_ {std::max(genesisSeq, detail::firstSeq(index))}
-    , lastSeq_ {detail::lastSeq(index)}
-    , pCache_ ("shard " + std::to_string(index_), cacheTargetSize,
+    , firstSeq_ {std::max (detail::genesisSeq, cfg.firstSeq(index))}
+    , lastSeq_ {cfg.lastSeq(index)}
+    , pCache_ ("shard " + std::to_string(index), cacheTargetSize,
         cacheTargetSeconds, stopwatch(), j)
-    , nCache_ ("shard " + std::to_string(index_), stopwatch(),
+    , nCache_ ("shard " + std::to_string(index), stopwatch(),
         cacheTargetSize, cacheTargetSeconds)
     , j_(j)
+    , shardConfig_ {cfg}
 {
-    assert(index_ >= detail::genesisShardIndex);
+    assert(index_ >= shardConfig_.genesisShardIndex());
 }
 
 bool
@@ -92,8 +93,8 @@ Shard::open(Section config, Scheduler& scheduler,
                 return false;
             }
             if (boost::icl::length(storedSeqs_) ==
-                (index_ == detail::genesisShardIndex ?
-                    detail::genesisNumLedgers : ledgersPerShard))
+                (index_ == shardConfig_.genesisShardIndex() ?
+                    shardConfig_.genesisNumLedgers() : shardConfig_.ledgersPerShard()))
             {
                 JLOG(j_.error()) <<
                     "shard " << std::to_string(index_) <<
@@ -124,8 +125,11 @@ Shard::setStored(std::shared_ptr<Ledger const> const& l)
         return false;
     }
     if (boost::icl::length(storedSeqs_) >=
-        (index_ == detail::genesisShardIndex ?
-            detail::genesisNumLedgers : ledgersPerShard) - 1)
+            ((index_ == shardConfig_.genesisShardIndex() ?
+                shardConfig_.genesisNumLedgers() :
+                shardConfig_.ledgersPerShard())
+            - 1)
+       )
     {
         if (backend_->fdlimit() != 0)
         {
