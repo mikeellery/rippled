@@ -100,7 +100,8 @@ class DatabaseShard_test : public TestBase
     }
 
     void testShardStoreAndFetch(
-        ripple::NodeStore::ShardConfig const& scfg)
+        ripple::NodeStore::ShardConfig const& scfg,
+        bool useCopy)
     {
         using namespace test::jtx;
         testcase("Store and Fetch, sharddb");
@@ -132,8 +133,45 @@ class DatabaseShard_test : public TestBase
             env.app().family(),
             env.app().timeKeeper().closeTime());
 
-        if (! BEAST_EXPECT(dbs->copyLedger(l)))
-            return;
+        if (useCopy)
+        {
+            if (! BEAST_EXPECT(dbs->copyLedger(l)))
+                return;
+        }
+        else
+        {
+            {
+                // Store the ledger header
+                Serializer s(128);
+                s.add32(HashPrefix::ledgerMaster);
+                addRaw(l->info(), s);
+                dbs->store(
+                    hotLEDGER,
+                    std::move(s.modData()),
+                    l->info().hash,
+                    l->info().seq);
+            }
+
+            auto fstore = [&](SHAMapAbstractNode& node)->bool {
+                auto nSrc = env.app().getNodeStore().fetch(
+                    node.getNodeHash().as_uint256(),
+                    node.getSeq());
+                if (! BEAST_EXPECT(nSrc))
+                    return false;
+
+                dbs->store(
+                    nSrc->getType(),
+                    Blob {nSrc->getData()},
+                    nSrc->getHash(),
+                    l->info().seq);
+
+                return true;
+            };
+
+            l->stateMap().snapShot(false)->visitNodes(fstore);
+            l->txMap().snapShot(false)->visitNodes(fstore);
+            dbs->setStored(l);
+        }
 
         auto fetched = dbs->fetchLedger(l->info().hash, *stat);
         if(! BEAST_EXPECT(fetched))
@@ -197,7 +235,8 @@ public:
         ripple::NodeStore::ShardConfig cfg {512u};
         auto lps = cfg.ledgersPerShard();
 
-        testShardStoreAndFetch(cfg);
+        testShardStoreAndFetch(cfg, true);
+        testShardStoreAndFetch(cfg, false);
 
         testNodeStore<DatabaseShard> ("nudb"); //default config used
         testNodeStore<DatabaseShard> ("nudb", lps, cfg);

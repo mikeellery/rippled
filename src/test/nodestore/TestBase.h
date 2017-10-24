@@ -257,23 +257,32 @@ public:
         ripple::test::jtx::Env* penv,
         ripple::NodeStore::ShardConfig const& scfg)
     {
-        std::uint32_t lastSeq {0u};
-        std::uint32_t seq {0u};
+        std::uint32_t lastShardIndex {0u};
         std::uint32_t id {0u};
         int transitions {0};
+        bool gotGenesisShard {false};
+
         for (auto& b : batch)
         {
             auto stat = db.prepare(scfg.ledgersPerShard() * 256);
             if (! stat)
                 throw std::runtime_error("prepare failed");
-            seq = *stat;
-            if (lastSeq != 0 && seq != (lastSeq-1))
+            auto seq = *stat;
+
+            if ((! gotGenesisShard) &&
+                    (scfg.seqToShardIndex(seq) == scfg.genesisShardIndex()))
             {
-                tc.log << "switched shard from " <<
-                    scfg.seqToShardIndex(lastSeq) << " (" << lastSeq << ")" <<
-                    " to " << scfg.seqToShardIndex(seq) << " (" << seq << ")" <<
-                    std::endl;
-                transitions++;
+                tc.log << "Got assigned genesis shard." << std::endl;
+                gotGenesisShard = true;
+            }
+
+            if (lastShardIndex != scfg.seqToShardIndex(seq))
+            {
+                tc.log << "Got assigned shard " << scfg.seqToShardIndex(seq)
+                    << " (" << seq << ")" << std::endl;
+                if (lastShardIndex != 0u)
+                    transitions++;
+                lastShardIndex = scfg.seqToShardIndex(seq);
             }
 
             std::shared_ptr<NodeObject> const object (b.second);
@@ -304,9 +313,14 @@ public:
             lger->setImmutable(config);
             db.setStored(lger);
 
-            lastSeq = b.first = seq;
+            b.first = seq;
         }
         auto expectedTransitions = (batch.size() - 1) / scfg.ledgersPerShard();
+        // the genesis shard is short (doesn't contain a full LPS) so there
+        // will be one extra shard seen if/when we get assigned the genesis
+        // shard.
+        if (gotGenesisShard)
+            expectedTransitions++;
         std::stringstream msg;
         msg << "saw " << transitions << " transitions, expected " <<
             expectedTransitions;
