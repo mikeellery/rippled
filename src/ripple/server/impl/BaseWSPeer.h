@@ -58,8 +58,12 @@ private:
     bool ping_active_ = false;
     beast::websocket::ping_data payload_;
     error_code ec_;
+    std::chrono::seconds timeout_;
 
 public:
+    BaseWSPeer(BaseWSPeer const&) = delete;
+    BaseWSPeer& operator=(BaseWSPeer const&) = delete;
+
     template<class Body, class Headers>
     BaseWSPeer(
         Port const& port,
@@ -67,7 +71,8 @@ public:
         endpoint_type remote_address,
         beast::http::request<Body, Headers>&& request,
         boost::asio::io_service& io_service,
-        beast::Journal journal);
+        beast::Journal journal,
+        std::chrono::seconds timeout = std::chrono::seconds{30});
 
     void
     run() override;
@@ -163,11 +168,14 @@ BaseWSPeer(
     endpoint_type remote_address,
     beast::http::request<Body, Headers>&& request,
     boost::asio::io_service& io_service,
-    beast::Journal journal)
+    beast::Journal journal,
+    std::chrono::seconds timeout
+)
     : BasePeer<Handler, Impl>(port, handler, remote_address,
         io_service, journal)
     , request_(std::move(request))
     , timer_(io_service)
+    , timeout_(timeout)
 {
 }
 
@@ -355,13 +363,8 @@ void
 BaseWSPeer<Handler, Impl>::
 start_timer()
 {
-    // Max seconds without completing a message
-    static constexpr std::chrono::seconds timeout{30};
-    static constexpr std::chrono::seconds timeoutLocal{3};
     error_code ec;
-    timer_.expires_from_now(
-        remote_endpoint().address().is_loopback() ? timeoutLocal : timeout,
-        ec);
+    timer_.expires_from_now(timeout_, ec);
     if(ec)
         return fail(ec, "start_timer");
     timer_.async_wait(strand_.wrap(std::bind(
