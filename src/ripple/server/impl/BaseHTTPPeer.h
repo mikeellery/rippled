@@ -61,10 +61,6 @@ protected:
     {
         // Size of our read/write buffer
         bufferSize = 4 * 1024,
-
-        // Max seconds without completing a message
-        timeoutSeconds = 30,
-        timeoutSecondsLocal = 3 //used for localhost clients
     };
 
     struct buffer
@@ -105,7 +101,6 @@ protected:
     int request_count_ = 0;
     std::size_t bytes_in_ = 0;
     std::size_t bytes_out_ = 0;
-    std::chrono::seconds timeout_;
 
     //--------------------------------------------------------------------------
 
@@ -116,8 +111,7 @@ public:
     template<class ConstBufferSequence>
     BaseHTTPPeer(Port const& port, Handler& handler,
         boost::asio::io_service& io_service, beast::Journal journal,
-            endpoint_type remote_address, ConstBufferSequence const& buffers,
-            std::chrono::seconds timeout = std::chrono::seconds{30});
+            endpoint_type remote_address, ConstBufferSequence const& buffers);
 
     virtual
     ~BaseHTTPPeer();
@@ -219,8 +213,7 @@ BaseHTTPPeer<Handler, Impl>::
 BaseHTTPPeer(Port const& port, Handler& handler,
     boost::asio::io_service& io_service, beast::Journal journal,
         endpoint_type remote_address,
-        ConstBufferSequence const& buffers,
-        std::chrono::seconds timeout)
+        ConstBufferSequence const& buffers)
     : port_(port)
     , handler_(handler)
     , work_(io_service)
@@ -228,7 +221,6 @@ BaseHTTPPeer(Port const& port, Handler& handler,
     , timer_(io_service)
     , remote_address_(remote_address)
     , journal_(journal)
-    , timeout_(timeout)
 {
     read_buf_.commit(boost::asio::buffer_copy(read_buf_.prepare(
         boost::asio::buffer_size(buffers)), buffers));
@@ -284,7 +276,7 @@ BaseHTTPPeer<Handler, Impl>::
 start_timer()
 {
     error_code ec;
-    timer_.expires_from_now(timeout_, ec);
+    timer_.expires_from_now(port_.rw_timeout, ec);
     if(ec)
         return fail(ec, "start_timer");
     timer_.async_wait(strand_.wrap(std::bind(

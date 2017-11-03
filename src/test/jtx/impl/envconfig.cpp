@@ -41,11 +41,13 @@ setupConfigForUnitTests (Config& cfg)
     cfg["port_rpc"].set("port", "8081");
     cfg["port_rpc"].set("protocol", "http,ws2");
     cfg["port_rpc"].set("admin", "127.0.0.1");
+    cfg["port_rpc"].set("rw_timeout", "3");
     cfg["server"].append("port_ws");
     cfg["port_ws"].set("ip", "127.0.0.1");
     cfg["port_ws"].set("port", "8082");
     cfg["port_ws"].set("protocol", "ws");
     cfg["port_ws"].set("admin", "127.0.0.1");
+    cfg["port_ws"].set("rw_timeout", "3");
 }
 
 namespace jtx {

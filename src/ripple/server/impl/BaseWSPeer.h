@@ -58,7 +58,6 @@ private:
     bool ping_active_ = false;
     beast::websocket::ping_data payload_;
     error_code ec_;
-    std::chrono::seconds timeout_;
 
 public:
     BaseWSPeer(BaseWSPeer const&) = delete;
@@ -71,8 +70,7 @@ public:
         endpoint_type remote_address,
         beast::http::request<Body, Headers>&& request,
         boost::asio::io_service& io_service,
-        beast::Journal journal,
-        std::chrono::seconds timeout = std::chrono::seconds{30});
+        beast::Journal journal);
 
     void
     run() override;
@@ -168,14 +166,12 @@ BaseWSPeer(
     endpoint_type remote_address,
     beast::http::request<Body, Headers>&& request,
     boost::asio::io_service& io_service,
-    beast::Journal journal,
-    std::chrono::seconds timeout
+    beast::Journal journal
 )
     : BasePeer<Handler, Impl>(port, handler, remote_address,
         io_service, journal)
     , request_(std::move(request))
     , timer_(io_service)
-    , timeout_(timeout)
 {
 }
 
@@ -364,7 +360,7 @@ BaseWSPeer<Handler, Impl>::
 start_timer()
 {
     error_code ec;
-    timer_.expires_from_now(timeout_, ec);
+    timer_.expires_from_now(port().rw_timeout, ec);
     if(ec)
         return fail(ec, "start_timer");
     timer_.async_wait(strand_.wrap(std::bind(

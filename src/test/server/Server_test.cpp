@@ -293,6 +293,7 @@ public:
         list.back().ip = boost::asio::ip::address::from_string (
             "127.0.0.1");
         list.back().protocol.insert("http");
+        list.back().rw_timeout = std::chrono::seconds{3};
         s->ports (list);
 
         test_request();
@@ -366,6 +367,7 @@ public:
             list.back().ip = boost::asio::ip::address::from_string (
                 "127.0.0.1");
             list.back().protocol.insert("http");
+            list.back().rw_timeout = std::chrono::seconds{3};
             s->ports (list);
         }
     }

@@ -61,6 +61,9 @@ struct Port
     // Websocket disconnects if send queue exceeds this limit
     std::uint16_t ws_queue_limit;
 
+    // timeout for read or write operations
+    std::chrono::seconds rw_timeout = std::chrono::seconds{30};
+
     // Returns `true` if any websocket protocols are specified
     bool websockets() const;
 
@@ -91,6 +94,7 @@ struct ParsedPort
     beast::websocket::permessage_deflate pmd_options;
     int limit = 0;
     std::uint16_t ws_queue_limit;
+    std::chrono::seconds rw_timeout;
 
     boost::optional<boost::asio::ip::address> ip;
     boost::optional<std::uint16_t> port;

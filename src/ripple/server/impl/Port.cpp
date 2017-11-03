@@ -260,6 +260,9 @@ parse_Port (ParsedPort& port, Section const& section, std::ostream& log)
         section.value_or("compress_level", 3);
     port.pmd_options.memLevel =
         section.value_or("memory_level", 4);
+    port.rw_timeout =
+        static_cast<std::chrono::seconds>(
+            section.value_or<std::uint16_t>("rw_timeout", 30));
 }
 
 } // ripple

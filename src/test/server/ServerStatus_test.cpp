@@ -78,6 +78,7 @@ class ServerStatus_test :
             (*p)["port_alt"].set("port", "8099");
             (*p)["port_alt"].set("protocol", "http");
             (*p)["port_alt"].set("admin", "127.0.0.1");
+            (*p)["port_alt"].set("rw_timeout", "3");
         }
 
         return p;

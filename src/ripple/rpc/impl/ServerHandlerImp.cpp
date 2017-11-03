@@ -837,6 +837,7 @@ to_Port(ParsedPort const& parsed, std::ostream& log)
     p.pmd_options = parsed.pmd_options;
     p.ws_queue_limit = parsed.ws_queue_limit;
     p.limit = parsed.limit;
+    p.rw_timeout = parsed.rw_timeout;
 
     return p;
 }
