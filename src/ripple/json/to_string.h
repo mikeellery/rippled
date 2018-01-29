@@ -36,6 +36,9 @@ std::string pretty (Value const&);
 /** Output using the StyledStreamWriter. @see Json::operator>>(). */
 std::ostream& operator<< (std::ostream&, const Value& root);
 
+/** modify the stream to scrub sensitive fields **/
+std::ostream& scrub(std::ostream& os);
+
 } // Json
 
 #endif // JSON_TO_STRING_H_INCLUDED

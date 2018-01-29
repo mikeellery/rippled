@@ -23,6 +23,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <array>
 #include <utility>
 
 namespace Json
@@ -503,10 +504,11 @@ StyledWriter::unindent ()
 // Class StyledStreamWriter
 // //////////////////////////////////////////////////////////////////
 
-StyledStreamWriter::StyledStreamWriter ( std::string indentation )
+StyledStreamWriter::StyledStreamWriter ( bool scrub, std::string indentation )
     : document_ (nullptr)
     , rightMargin_ ( 74 )
     , indentation_ ( indentation )
+    , scrub_(scrub)
 {
 }
 
@@ -522,6 +524,15 @@ StyledStreamWriter::write ( std::ostream& out, const Value& root )
     document_ = nullptr; // Forget the stream, for safety.
 }
 
+static std::array<char const*, 7> const scrubLabels {{
+    "master_key",
+    "master_seed",
+    "master_seed_hex",
+    "passphrase",
+    "secret",
+    "seed",
+    "seed_hex"
+}};
 
 void
 StyledStreamWriter::writeValue ( const Value& value )
@@ -574,7 +585,21 @@ StyledStreamWriter::writeValue ( const Value& value )
                 const Value& childValue = value[name];
                 writeWithIndent ( valueToQuotedString ( name.c_str () ) );
                 *document_ << " : ";
-                writeValue ( childValue );
+                if (scrub_ &&
+                    std::find_if(
+                        scrubLabels.begin(),
+                        scrubLabels.end(),
+                        [&name](const char* i){
+                            return strncmp(i, name.c_str(), name.size()) == 0;
+                        }) != scrubLabels.end()
+                   )
+                {
+                    *document_ << "\"__redacted__\"";
+                }
+                else
+                {
+                    writeValue ( childValue );
+                }
 
                 if ( ++it == members.end () )
                     break;
@@ -735,10 +760,16 @@ StyledStreamWriter::unindent ()
     indentString_.resize ( indentString_.size () - indentation_.size () );
 }
 
+inline int i_scrub() {
+    static int i = std::ios_base::xalloc();
+    return i;
+}
+
+std::ostream& scrub(std::ostream& os) { os.iword(i_scrub()) = 1; return os; }
 
 std::ostream& operator<< ( std::ostream& sout, const Value& root )
 {
-    Json::StyledStreamWriter writer;
+    Json::StyledStreamWriter writer(sout.iword(i_scrub()) == 1);
     writer.write (sout, root);
     return sout;
 }

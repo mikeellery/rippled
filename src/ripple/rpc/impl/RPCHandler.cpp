@@ -138,7 +138,7 @@ error_code_i fillHandler (Context& context,
                               context.params[jss::method].asString();
 
     JLOG (context.j.trace()) << "COMMAND:" << strCommand;
-    JLOG (context.j.trace()) << "REQUEST:" << context.params;
+    JLOG (context.j.trace()) << "REQUEST:" << Json::scrub << context.params;
     auto handler = getHandler(strCommand);
 
     if (!handler)

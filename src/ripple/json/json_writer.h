@@ -135,7 +135,7 @@ private:
 class StyledStreamWriter
 {
 public:
-    StyledStreamWriter ( std::string indentation = "\t" );
+    StyledStreamWriter ( bool scrub = false, std::string indentation = "\t" );
     ~StyledStreamWriter () {}
 
 public:
@@ -164,6 +164,7 @@ private:
     int rightMargin_;
     std::string indentation_;
     bool addChildValues_;
+    bool scrub_;
 };
 
 std::string valueToString ( Int value );
@@ -175,6 +176,7 @@ std::string valueToQuotedString ( const char* value );
 /// \brief Output using the StyledStreamWriter.
 /// \see Json::operator>>()
 std::ostream& operator<< ( std::ostream&, const Value& root );
+std::ostream& scrub(std::ostream& os);
 
 //------------------------------------------------------------------------------
 
