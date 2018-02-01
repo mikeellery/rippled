@@ -296,7 +296,6 @@ int run (int argc, char** argv)
     ("conf", po::value<std::string> (), "Specify the configuration file.")
     ("rpc", "Perform rpc command (default).")
     ("rpc_ip", po::value <std::string> (), "Specify the IP address for RPC command. Format: <ip-address>[':'<port-number>]")
-    ("rpc_port", po::value <std::uint16_t> (), "Specify the port number for RPC command.")
     ("standalone,a", "Run with no peers.")
     ("unittest,u", po::value <std::string> ()->implicit_value (""), "Perform unit tests.")
     ("unittest-arg", po::value <std::string> ()->implicit_value (""), "Supplies argument to unit tests.")
@@ -467,37 +466,22 @@ int run (int argc, char** argv)
     // happen after the config file is loaded.
     if (vm.count ("rpc_ip"))
     {
-        try
-        {
-            config->rpc_ip.emplace (
-                boost::asio::ip::address_v4::from_string(
-                    vm["rpc_ip"].as<std::string>()));
-        }
-        catch(std::exception const&)
+        auto res = beast::IP::Endpoint::from_string_checked(
+            vm["rpc_ip"].as<std::string>());
+        if (! res.second)
         {
             std::cerr << "Invalid rpc_ip = " <<
                 vm["rpc_ip"].as<std::string>() << std::endl;
             return -1;
         }
-    }
 
-    // Override the RPC destination port number
-    //
-    if (vm.count ("rpc_port"))
-    {
-        try
+        if (res.first.port() == 0)
         {
-            config->rpc_port.emplace (
-                vm["rpc_port"].as<std::uint16_t>());
-
-            if (*config->rpc_port == 0)
-                throw std::domain_error("0");
-        }
-        catch(std::exception const& e)
-        {
-            std::cerr << "Invalid rpc_port = " << e.what() << "\n";
+            std::cerr << "No port specified in rpc_ip." << std::endl;
             return -1;
         }
+
+        config->rpc_ip = std::move(res.first);
     }
 
     if (vm.count ("quorum"))
