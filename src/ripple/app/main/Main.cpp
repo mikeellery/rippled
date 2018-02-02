@@ -296,6 +296,7 @@ int run (int argc, char** argv)
     ("conf", po::value<std::string> (), "Specify the configuration file.")
     ("rpc", "Perform rpc command (default).")
     ("rpc_ip", po::value <std::string> (), "Specify the IP address for RPC command. Format: <ip-address>[':'<port-number>]")
+    ("rpc_port", po::value <std::uint16_t> (), "DEPRECATED: include with rpc_ip instead. Specify the port number for RPC command.")
     ("standalone,a", "Run with no peers.")
     ("unittest,u", po::value <std::string> ()->implicit_value (""), "Perform unit tests.")
     ("unittest-arg", po::value <std::string> ()->implicit_value (""), "Supplies argument to unit tests.")
@@ -471,14 +472,30 @@ int run (int argc, char** argv)
         if (! res.second)
         {
             std::cerr << "Invalid rpc_ip = " <<
-                vm["rpc_ip"].as<std::string>() << std::endl;
+                vm["rpc_ip"].as<std::string>() << "\n";
             return -1;
         }
 
         if (res.first.port() == 0)
         {
-            std::cerr << "No port specified in rpc_ip." << std::endl;
-            return -1;
+            std::cerr << "No port specified in rpc_ip.\n";
+            if (vm.count ("rpc_port"))
+            {
+                std::cerr << "WARNING: using deprecated rpc_port param.\n";
+                try
+                {
+                    res.first.at_port(vm["rpc_port"].as<std::uint16_t>());
+                    if (res.first.port() == 0)
+                        throw std::domain_error("0");
+                }
+                catch(std::exception const& e)
+                {
+                    std::cerr << "Invalid rpc_port = " << e.what() << "\n";
+                    return -1;
+                }
+            }
+            else
+                return -1;
         }
 
         config->rpc_ip = std::move(res.first);
