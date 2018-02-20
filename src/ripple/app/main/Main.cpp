@@ -181,18 +181,24 @@ void printHelp (const po::options_description& desc)
 
 //------------------------------------------------------------------------------
 
+namespace test{ extern std::atomic<bool> envUseIPv4; }
+
 static int runUnitTests(
     std::string const& pattern,
     std::string const& argument,
     bool quiet,
     bool log,
     bool child,
+    bool ipv4,
     std::size_t num_jobs,
     int argc,
     char** argv)
 {
     using namespace beast::unit_test;
     using namespace ripple::test;
+
+    if (ipv4)
+        ripple::test::envUseIPv4 = true;
 
 #if HAS_BOOST_PROCESS
     if (!child && num_jobs == 1)
@@ -201,6 +207,7 @@ static int runUnitTests(
         multi_runner_parent parent_runner;
 
         multi_runner_child child_runner{num_jobs, quiet, log};
+        child_runner.arg(argument);
         auto const any_failed = child_runner.run_multi(match_auto(pattern));
 
         if (any_failed)
@@ -250,6 +257,7 @@ static int runUnitTests(
     {
         // child
         multi_runner_child runner{num_jobs, quiet, log};
+        runner.arg(argument);
         auto const anyFailed = runner.run_multi(match_auto(pattern));
 
         if (anyFailed)
@@ -301,6 +309,7 @@ int run (int argc, char** argv)
     ("unittest,u", po::value <std::string> ()->implicit_value (""), "Perform unit tests.")
     ("unittest-arg", po::value <std::string> ()->implicit_value (""), "Supplies argument to unit tests.")
     ("unittest-log", po::value <std::string> ()->implicit_value (""), "Force unit test log output, even in quiet mode.")
+    ("unittest-ipv4", "Use IPv4 localhost when running unittests (default is IPv6).")
 #if HAS_BOOST_PROCESS
     ("unittest-jobs", po::value <std::size_t> (), "Number of unittest jobs to run.")
     ("unittest-child", "For internal use only. Run the process as a unit test child process.")
@@ -382,6 +391,7 @@ int run (int argc, char** argv)
             bool (vm.count ("quiet")),
             bool (vm.count ("unittest-log")),
             unittestChild,
+            bool (vm.count ("unittest-ipv4")),
             numJobs,
             argc,
             argv);
