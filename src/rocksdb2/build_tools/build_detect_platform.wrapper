@@ -1,0 +1,23 @@
+#!/bin/bash
+#
+# RIPPLE wrapper...we currently don't want to depend on
+# any of these extra libs, but the rocksdb detection script
+# finds them if installed.
+OUTPUT=$1
+MYDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+${MYDIR}/build_detect_platform "$@"
+
+perl -pi -e 's/-lz(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-lbz2(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-llz4(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-lzstd(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-lnuma(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-ltbb(?=[\s\v])//g' "${OUTPUT}"
+
+perl -pi -e 's/-DZLIB(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-DBZIP2(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-DLZ4(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-DZSTD(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-DNUMA(?=[\s\v])//g' "${OUTPUT}"
+perl -pi -e 's/-DTBB(?=[\s\v])//g' "${OUTPUT}"
+
