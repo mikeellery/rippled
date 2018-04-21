@@ -707,19 +707,22 @@ macro(setup_build_boilerplate)
       -DNOMINMAX
       -DBOOST_COROUTINE_NO_DEPRECATION_WARNING
       -DBOOST_COROUTINES_NO_DEPRECATION_WARNING)
+    list (APPEND _lflags
+      /ERRORREPORT:NONE
+      /MACHINE:X64
+      /nologo
+      /SUBSYSTEM:CONSOLE)
+    append_flags(CMAKE_EXE_LINKER_FLAGS ${_lflags})
     append_flags(CMAKE_EXE_LINKER_FLAGS
       /DEBUG
       /DYNAMICBASE
-      /ERRORREPORT:NONE
-      /MACHINE:X64
       /MANIFEST
-      /nologo
       /NXCOMPAT
-      /SUBSYSTEM:CONSOLE
       /TLBID:1)
+    append_flags(CMAKE_SHARED_LINKER_FLAGS ${_lflags})
+    append_flags(CMAKE_STATIC_LINKER_FLAGS ${_lflags})
 
-
-    # There seems to be an issue using generator experssions with multiple values,
+    # There seems to be an issue using generator expressions with multiple values,
     # split the expression
     # /GS  Buffers security check: enable
     add_compile_options($<$<OR:$<CONFIG:Debug>,$<CONFIG:DebugClassic>>:/GS>)

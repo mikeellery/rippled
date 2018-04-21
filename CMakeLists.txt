@@ -158,6 +158,49 @@ use_protobuf()
 setup_build_boilerplate()
 
 ############################################################
+##  a lib to a separate/isolate the "old" beast code
+############################################################
+
+file(GLOB_RECURSE rb_headers
+  src/ripple/beast/*.h
+  src/ripple/beast/*.hpp)
+
+add_library (ripple_beast STATIC
+  $<$<BOOL:${unity}>:
+      src/ripple/beast/core/core.unity.cpp
+      src/ripple/beast/unity/beast_hash_unity.cpp
+      src/ripple/beast/unity/beast_insight_unity.cpp
+      src/ripple/beast/unity/beast_net_unity.cpp
+      src/ripple/beast/unity/beast_utility_unity.cpp
+  >
+  $<$<NOT:$<BOOL:${unity}>>:
+      src/ripple/beast/core/CurrentThreadName.cpp
+      src/ripple/beast/core/SemanticVersion.cpp
+      src/ripple/beast/core/WaitableEvent.cpp
+      src/ripple/beast/hash/impl/xxhash.cpp
+      src/ripple/beast/insight/impl/Collector.cpp
+      src/ripple/beast/insight/impl/Group.cpp
+      src/ripple/beast/insight/impl/Groups.cpp
+      src/ripple/beast/insight/impl/Hook.cpp
+      src/ripple/beast/insight/impl/Metric.cpp
+      src/ripple/beast/insight/impl/NullCollector.cpp
+      src/ripple/beast/insight/impl/StatsDCollector.cpp
+      src/ripple/beast/net/impl/IPAddressConversion.cpp
+      src/ripple/beast/net/impl/IPAddressV4.cpp
+      src/ripple/beast/net/impl/IPAddressV6.cpp
+      src/ripple/beast/net/impl/IPEndpoint.cpp
+      src/ripple/beast/utility/src/beast_Debug.cpp
+      src/ripple/beast/utility/src/beast_Journal.cpp
+      src/ripple/beast/utility/src/beast_PropertyStream.cpp
+  >
+  ${rb_headers})
+
+target_include_directories (ripple_beast PUBLIC src/ripple)
+# express dependency of this lib on boost headers (asio and optional)
+target_link_libraries (ripple_beast PUBLIC Boost::boost)
+add_library (ripple::beast ALIAS ripple_beast)
+
+############################################################
 
 if (is_clang)
   set(rocks_db_system_header --system-header-prefix=rocksdb2)
@@ -173,12 +216,6 @@ set(soci_extra_includes
 ############################################################
 
 # Unity sources
-prepend(beast_unity_srcs
-src/ripple/beast/unity/
-beast_insight_unity.cpp
-beast_net_unity.cpp
-beast_hash_unity.cpp
-beast_utility_unity.cpp)
 
 prepend(ripple_unity_srcs
 src/ripple/unity/
@@ -249,11 +286,6 @@ ${rocks_db_system_header})
 
 add_with_props(rippled_src_unity src/ripple/unity/soci_ripple.cpp ${soci_extra_includes})
 
-list(APPEND ripple_unity_srcs ${beast_unity_srcs} ${test_unity_srcs}
-src/ripple/unity/nodestore.cpp
-src/ripple/unity/soci_ripple.cpp
-src/test/unity/nodestore_test_unity.cpp)
-
 ############################################################
 
 # Non-unity sources
@@ -262,15 +294,7 @@ add_with_props(rippled_src_nonunity "${core_srcs}"
     -I"${CMAKE_SOURCE_DIR}/"src/soci/src/core
     -I"${CMAKE_SOURCE_DIR}/"src/sqlite)
 
-set(non_unity_srcs ${core_srcs})
-
 foreach(curdir
-        beast/clock
-        beast/container
-        beast/hash
-        beast/insight
-        beast/net
-        beast/utility
         app
         basics
         conditions
@@ -289,7 +313,6 @@ foreach(curdir
         shamap)
     file(GLOB_RECURSE cursrcs src/ripple/${curdir}/*.cpp)
     list(APPEND rippled_src_nonunity "${cursrcs}")
-    list(APPEND non_unity_srcs "${cursrcs}")
 endforeach()
 
 file(GLOB_RECURSE nodestore_srcs src/ripple/nodestore/*.cpp
@@ -300,8 +323,6 @@ add_with_props(rippled_src_nonunity "${nodestore_srcs}"
     -I"${CMAKE_SOURCE_DIR}/"src/snappy/snappy
     -I"${CMAKE_SOURCE_DIR}/"src/snappy/config
     ${rocks_db_system_header})
-
-list(APPEND non_unity_srcs "${nodestore_srcs}")
 
 # unit test sources
 foreach(curdir
@@ -334,20 +355,12 @@ add_with_props(rippled_src_nonunity "${test_srcs}"
     -I"${CMAKE_SOURCE_DIR}/"src/snappy/config
     ${rocks_db_system_header})
 
-list(APPEND non_unity_srcs "${test_srcs}")
-
 if(WIN32 OR is_xcode)
     # Rippled headers. Only needed for IDEs.
     file(GLOB_RECURSE rippled_headers src/*.h src/*.hpp *.md)
     list(APPEND rippled_headers Builds/CMake/CMakeFuncs.cmake)
     foreach(curdir
-            beast/asio
-            beast/core
-            beast/crypto
-            beast/cxx17
-            proto
-            validators
-            websocket)
+            proto)
         file(GLOB_RECURSE cursrcs src/ripple/${curdir}/*.cpp)
         list(APPEND rippled_headers "${cursrcs}")
     endforeach()
@@ -396,7 +409,6 @@ add_with_props(rippled_src_all src/ripple/unity/secp256k1.cpp
   )
 
 foreach(cursrc
-    src/ripple/unity/beast.cpp
     src/ripple/unity/lz4.c
     src/ripple/unity/protobuf.cpp
     src/ripple/unity/ripple.proto.cpp)
@@ -494,7 +506,7 @@ set_startup_project(rippled)
 
 foreach(target IN LISTS targets)
     target_link_libraries(${target}
-      ${OPENSSL_LIBRARIES} ${PROTOBUF_LIBRARIES} ${SANITIZER_LIBRARIES})
+      ripple::beast ${OPENSSL_LIBRARIES} ${PROTOBUF_LIBRARIES} ${SANITIZER_LIBRARIES})
 
     link_common_libraries(${target})
 endforeach()
