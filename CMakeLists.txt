@@ -553,6 +553,8 @@ file (MAKE_DIRECTORY ${install_path}/include)
 add_dependencies (archive_lib libarchive)
 target_include_directories (archive_lib INTERFACE ${install_path}/include)
 target_link_libraries(archive_lib INTERFACE NIH::lz4)
+target_compile_definitions (archive_lib
+    INTERFACE LIBARCHIVE_STATIC)
 add_library (NIH::libarchive ALIAS archive_lib)
 list (APPEND RIPPLED_NIH_LIBRARIES NIH::libarchive)
 
