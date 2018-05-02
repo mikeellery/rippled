@@ -62,7 +62,7 @@
 #
 # Don't put any code above or in this block, unless it
 # has similar constraints.
-cmake_minimum_required(VERSION 3.7.0)
+cmake_minimum_required(VERSION 3.8.0)
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/Builds/CMake")
 include(CMakeFuncs)
 set(openssl_min 1.0.2)
@@ -284,7 +284,6 @@ add_custom_command (TARGET sqlite3 POST_BUILD
 ExternalProject_Add (soci
   SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/soci
   DOWNLOAD_COMMAND ""
-  UPDATE_COMMAND ""
   CMAKE_ARGS
     $<$<BOOL:${CMAKE_VERBOSE_MAKEFILE}>:
       -DCMAKE_VERBOSE_MAKEFILE=ON
@@ -340,35 +339,44 @@ endif()
 ExternalProject_Get_Property (soci BINARY_DIR)
 set (install_path ${BINARY_DIR}/_installed)
 add_library (soci_core STATIC IMPORTED GLOBAL)
-set_target_properties (soci_core
-  PROPERTIES
-  IMPORTED_LOCATION ${install_path}/lib/${LIB_PRE}soci_core${LIB_POST})
+set_target_properties (soci_core PROPERTIES
+  IMPORTED_LOCATION ${install_path}/lib/${LIB_PRE}soci_core${LIB_POST}
+  INTERFACE_INCLUDE_DIRECTORIES ${install_path}/include)
+add_dependencies (soci_core soci) # something has to depend on the ExternalProject to trigger it
 ## we have to pre-create include paths to workaround cmake issue
 ## see https://gitlab.kitware.com/cmake/cmake/issues/15052
 file (MAKE_DIRECTORY ${install_path}/include)
-target_include_directories (soci_core
-  INTERFACE
-    ${install_path}/include)
-add_dependencies (soci_core soci) # something has to depend on the ExternalProject to trigger it
-add_library (NIH::soci_core ALIAS soci_core)
+if (${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.11)
+  add_library (NIH::soci_core ALIAS soci_core)
+  list (APPEND RIPPLED_NIH_LIBRARIES NIH::soci_core)
+else ()
+  list (APPEND RIPPLED_NIH_LIBRARIES soci_core)
+endif ()
 
 add_library (soci_empty STATIC IMPORTED GLOBAL)
-set_target_properties (soci_empty
-  PROPERTIES
+set_target_properties (soci_empty PROPERTIES
   IMPORTED_LOCATION ${install_path}/lib/${LIB_PRE}soci_empty${LIB_POST})
 target_link_libraries(soci_empty INTERFACE soci_core)
-add_library (NIH::soci_empty ALIAS soci_empty)
+if (${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.11)
+  add_library (NIH::soci_empty ALIAS soci_empty)
+  list (APPEND RIPPLED_NIH_LIBRARIES NIH::soci_empty)
+else ()
+  list (APPEND RIPPLED_NIH_LIBRARIES soci_empty)
+endif ()
 
 add_library (soci_sqlite STATIC IMPORTED GLOBAL)
-set_target_properties (soci_sqlite
-  PROPERTIES
+set_target_properties (soci_sqlite PROPERTIES
   IMPORTED_LOCATION ${install_path}/lib/${LIB_PRE}soci_sqlite3${LIB_POST})
 target_link_libraries (soci_sqlite
   INTERFACE sqlite3)
 target_link_libraries(soci_sqlite INTERFACE soci_core)
-add_library (NIH::soci_sqlite ALIAS soci_sqlite)
+if (${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.11)
+  add_library (NIH::soci_sqlite ALIAS soci_sqlite)
+  list (APPEND RIPPLED_NIH_LIBRARIES NIH::soci_sqlite)
+else ()
+  list (APPEND RIPPLED_NIH_LIBRARIES soci_sqlite)
+endif ()
 
-list (APPEND RIPPLED_NIH_LIBRARIES NIH::soci_core NIH::soci_empty NIH::soci_sqlite)
 
 ######################################################################
 ###   NIH dep: snappy                                              ###
@@ -377,7 +385,6 @@ list (APPEND RIPPLED_NIH_LIBRARIES NIH::soci_core NIH::soci_empty NIH::soci_sqli
 ExternalProject_Add (snappy
   SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/snappy/snappy
   DOWNLOAD_COMMAND ""
-  UPDATE_COMMAND ""
   CMAKE_ARGS
     -DCMAKE_CXX_STANDARD=14
     $<$<BOOL:${CMAKE_VERBOSE_MAKEFILE}>:
@@ -405,14 +412,17 @@ ExternalProject_Add (snappy
 ExternalProject_Get_Property (snappy BINARY_DIR)
 set (install_path ${BINARY_DIR}/_installed)
 add_library (snappy_lib STATIC IMPORTED GLOBAL)
-set_target_properties (snappy_lib
-  PROPERTIES
-    IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}snappy${CMAKE_STATIC_LIBRARY_SUFFIX})
-file (MAKE_DIRECTORY ${install_path}/include)
-target_include_directories (snappy_lib INTERFACE ${install_path}/include)
+set_target_properties (snappy_lib PROPERTIES
+    IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}snappy${CMAKE_STATIC_LIBRARY_SUFFIX}
+    INTERFACE_INCLUDE_DIRECTORIES ${install_path}/include)
 add_dependencies (snappy_lib snappy)
-add_library (NIH::snappy ALIAS snappy_lib)
-list (APPEND RIPPLED_NIH_LIBRARIES NIH::snappy)
+file (MAKE_DIRECTORY ${install_path}/include)
+if (${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.11)
+  add_library (NIH::snappy ALIAS snappy_lib)
+  list (APPEND RIPPLED_NIH_LIBRARIES NIH::snappy)
+else ()
+  list (APPEND RIPPLED_NIH_LIBRARIES snappy_lib)
+endif ()
 
 ######################################################################
 ###   NIH dep: rocksdb                                             ###
@@ -429,7 +439,6 @@ if(NOT MSVC AND COMPILER_SUPPORTS_CXX11)
     DOWNLOAD_COMMAND
       ${CMAKE_COMMAND} -E copy_directory
       ${CMAKE_SOURCE_DIR}/src/rocksdb2 <SOURCE_DIR>
-    UPDATE_COMMAND ""
     CONFIGURE_COMMAND ""
     LOG_BUILD ON
     BUILD_IN_SOURCE ON
@@ -447,26 +456,24 @@ if(NOT MSVC AND COMPILER_SUPPORTS_CXX11)
   ExternalProject_Get_Property (rocksdb SOURCE_DIR)
   set (install_path ${SOURCE_DIR}/_installed)
   add_library (rocksdb_lib STATIC IMPORTED GLOBAL)
-  set_target_properties (rocksdb_lib
-    PROPERTIES
-      IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}rocksdb${CMAKE_STATIC_LIBRARY_SUFFIX})
-  file (MAKE_DIRECTORY ${install_path}/include)
-  target_include_directories (rocksdb_lib INTERFACE ${install_path}/include)
   add_dependencies (rocksdb_lib rocksdb snappy_lib)
-  target_compile_definitions (rocksdb_lib
-    INTERFACE RIPPLE_ROCKSDB_AVAILABLE=1)
-  target_compile_options (rocksdb_lib
-    INTERFACE
-    $<$<BOOL:${is_clang}>:
-      --system-header-prefix=rocksdb
-    >)
+  set_target_properties (rocksdb_lib PROPERTIES
+    IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}rocksdb${CMAKE_STATIC_LIBRARY_SUFFIX}
+    INTERFACE_INCLUDE_DIRECTORIES ${install_path}/include
+    INTERFACE_COMPILE_DEFINITIONS RIPPLE_ROCKSDB_AVAILABLE=1
+    INTERFACE_COMPILE_OPTIONS $<$<BOOL:${is_clang}>:--system-header-prefix=rocksdb>)
+  file (MAKE_DIRECTORY ${install_path}/include)
 else()
   add_library (rocksdb_lib INTERFACE)
   target_compile_definitions (rocksdb_lib
     INTERFACE RIPPLE_ROCKSDB_AVAILABLE=0)
 endif()
-add_library (NIH::rocksdb ALIAS rocksdb_lib)
-list (APPEND RIPPLED_NIH_LIBRARIES NIH::rocksdb)
+if (${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.11)
+  add_library (NIH::rocksdb ALIAS rocksdb_lib)
+  list (APPEND RIPPLED_NIH_LIBRARIES NIH::rocksdb)
+else ()
+  list (APPEND RIPPLED_NIH_LIBRARIES rocksdb_lib)
+endif ()
 
 ######################################################################
 ###   NIH dep: nudb                                                ###
@@ -476,13 +483,15 @@ add_library (nudb INTERFACE)
 target_include_directories (nudb
   INTERFACE src/nudb/include)
 
-target_link_libraries(nudb
-  INTERFACE
-    # TODO fix this for windows..
-    $<$<NOT:$<BOOL:${MSVC}>>:
+if(TARGET Boost::thread)
+  target_link_libraries(nudb
+    INTERFACE
       Boost::thread
-      Boost::system
-    >)
+      Boost::system)
+else ()
+  target_link_libraries(nudb
+    INTERFACE ${Boost_LIBRARIES})
+endif ()
 add_library (NIH::nudb ALIAS nudb)
 list (APPEND RIPPLED_NIH_LIBRARIES NIH::nudb)
 
@@ -493,7 +502,6 @@ list (APPEND RIPPLED_NIH_LIBRARIES NIH::nudb)
 ExternalProject_Add (libarchive
   GIT_REPOSITORY https://github.com/libarchive/libarchive.git
   GIT_TAG v3.3.1
-  UPDATE_COMMAND ""
   CMAKE_ARGS
     $<$<BOOL:${CMAKE_VERBOSE_MAKEFILE}>:
       -DCMAKE_VERBOSE_MAKEFILE=ON
@@ -546,17 +554,19 @@ ExternalProject_Add (libarchive
 ExternalProject_Get_Property (libarchive BINARY_DIR)
 set (install_path ${BINARY_DIR}/_installed)
 add_library (archive_lib STATIC IMPORTED GLOBAL)
-set_target_properties (archive_lib
-  PROPERTIES
-    IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}archive${CMAKE_STATIC_LIBRARY_SUFFIX})
+set_target_properties (archive_lib PROPERTIES
+  IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}archive${CMAKE_STATIC_LIBRARY_SUFFIX}
+  INTERFACE_INCLUDE_DIRECTORIES ${install_path}/include
+  INTERFACE_COMPILE_DEFINITIONS LIBARCHIVE_STATIC)
 file (MAKE_DIRECTORY ${install_path}/include)
 add_dependencies (archive_lib libarchive)
-target_include_directories (archive_lib INTERFACE ${install_path}/include)
 target_link_libraries(archive_lib INTERFACE NIH::lz4)
-target_compile_definitions (archive_lib
-    INTERFACE LIBARCHIVE_STATIC)
-add_library (NIH::libarchive ALIAS archive_lib)
-list (APPEND RIPPLED_NIH_LIBRARIES NIH::libarchive)
+if (${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.11)
+  add_library (NIH::libarchive ALIAS archive_lib)
+  list (APPEND RIPPLED_NIH_LIBRARIES NIH::libarchive)
+else ()
+  list (APPEND RIPPLED_NIH_LIBRARIES archive_lib)
+endif()
 
 
 set(RIPPLED_LIBRARIES)
@@ -622,7 +632,11 @@ add_library (ripple_protos STATIC
   ${PROTO_HDRS})
 target_include_directories (ripple_protos
     PUBLIC ${CMAKE_BINARY_DIR})
-target_link_libraries (ripple_protos protobuf::libprotobuf)
+if(TARGET protobuf::libprotobuf)
+  target_link_libraries (ripple_protos protobuf::libprotobuf)
+else ()
+  target_link_libraries (ripple_protos ${Protobuf_LIBRARIES})
+endif ()
 target_compile_options (ripple_protos
   PUBLIC
     $<$<BOOL:${is_xcode}>:--system-header-prefix="google/protobuf">
