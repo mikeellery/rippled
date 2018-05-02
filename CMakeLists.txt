@@ -377,7 +377,8 @@ else ()
   list (APPEND RIPPLED_NIH_LIBRARIES soci_sqlite)
 endif ()
 
-
+include(GNUInstallDirs)
+ 
 ######################################################################
 ###   NIH dep: snappy                                              ###
 ######################################################################
@@ -413,7 +414,7 @@ ExternalProject_Get_Property (snappy BINARY_DIR)
 set (install_path ${BINARY_DIR}/_installed)
 add_library (snappy_lib STATIC IMPORTED GLOBAL)
 set_target_properties (snappy_lib PROPERTIES
-    IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}snappy${CMAKE_STATIC_LIBRARY_SUFFIX}
+    IMPORTED_LOCATION ${install_path}/${CMAKE_INSTALL_LIBDIR}/${CMAKE_STATIC_LIBRARY_PREFIX}snappy${CMAKE_STATIC_LIBRARY_SUFFIX}
     INTERFACE_INCLUDE_DIRECTORIES ${install_path}/include)
 add_dependencies (snappy_lib snappy)
 file (MAKE_DIRECTORY ${install_path}/include)
