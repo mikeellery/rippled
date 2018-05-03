@@ -70,6 +70,13 @@ parse_target()
 project(rippled)
 #########################################################
 get_property(is_multiconfig GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if (is_multiconfig STREQUAL "NOTFOUND")
+  if (${CMAKE_GENERATOR} STREQUAL "Xcode" OR ${CMAKE_GENERATOR} MATCHES "^Visual Studio")
+    set (is_multiconfig TRUE)
+  else ()
+    set (is_multiconfig FALSE)
+  endif ()
+endif ()
 
 if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_BINARY_DIR}")
   set(dir "build")
@@ -281,6 +288,14 @@ add_custom_command (TARGET sqlite3 POST_BUILD
 ###   NIH dep: soci                                                ###
 ######################################################################
 
+# SOCI has a weird library naming scheme...
+set(LIB_PRE ${CMAKE_STATIC_LIBRARY_PREFIX})
+set(LIB_POST ${CMAKE_STATIC_LIBRARY_SUFFIX})
+if (WIN32)
+  set(LIB_PRE lib) # for some reason soci on windows still prepends lib (non-standard)
+  # this name can change whenever soci is updated
+  set(LIB_POST "_4_0${LIB_POST}")
+endif()
 ExternalProject_Add (soci
   SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/soci
   DOWNLOAD_COMMAND ""
@@ -290,7 +305,6 @@ ExternalProject_Add (soci
     >
     -DCMAKE_INSTALL_PREFIX=_installed
     -DSOCI_CXX_C11=ON
-    #-DCMAKE_CXX_STANDARD=14
     -DSOCI_STATIC=ON
     -DSOCI_LIBDIR=lib
     -DSOCI_SHARED=OFF
@@ -327,15 +341,11 @@ ExternalProject_Add (soci
     --config $<CONFIG>
   TEST_COMMAND ""
   DEPENDS sqlite3
+  BUILD_BYPRODUCTS
+    <BINARY_DIR>/_installed/lib/${LIB_PRE}soci_core${LIB_POST}
+    <BINARY_DIR>/_installed/lib/${LIB_PRE}soci_empty${LIB_POST}
+    <BINARY_DIR>/_installed/lib/${LIB_PRE}soci_sqlite3${LIB_POST}
 )
-# SOCI has a weird library naming scheme...
-set(LIB_PRE ${CMAKE_STATIC_LIBRARY_PREFIX})
-set(LIB_POST ${CMAKE_STATIC_LIBRARY_SUFFIX})
-if (WIN32)
-  set(LIB_PRE lib) # for some reason soci on windows still prepends lib (non-standard)
-  # this name can change whenever soci is updated
-  set(LIB_POST "_4_0${LIB_POST}")
-endif()
 ExternalProject_Get_Property (soci BINARY_DIR)
 set (install_path ${BINARY_DIR}/_installed)
 add_library (soci_core STATIC IMPORTED GLOBAL)
@@ -378,7 +388,7 @@ else ()
 endif ()
 
 include(GNUInstallDirs)
- 
+
 ######################################################################
 ###   NIH dep: snappy                                              ###
 ######################################################################
@@ -408,6 +418,7 @@ ExternalProject_Add (snappy
     --build .
     --config $<CONFIG>
   TEST_COMMAND ""
+  BUILD_BYPRODUCTS <BINARY_DIR>/_installed/${CMAKE_INSTALL_LIBDIR}/${CMAKE_STATIC_LIBRARY_PREFIX}snappy${CMAKE_STATIC_LIBRARY_SUFFIX}
 )
 ## TODO: does this depend on zlib and/or lzo?)
 ExternalProject_Get_Property (snappy BINARY_DIR)
@@ -436,7 +447,7 @@ if(NOT MSVC AND COMPILER_SUPPORTS_CXX11)
     ## here we copy locally from our source tree to
     ## the standard EP source dir because we want to do
     ## an in-source makefile build and don't want this to
-    ## be done in teh main source tree.
+    ## be done in the main source tree.
     DOWNLOAD_COMMAND
       ${CMAKE_COMMAND} -E copy_directory
       ${CMAKE_SOURCE_DIR}/src/rocksdb2 <SOURCE_DIR>
@@ -453,6 +464,7 @@ if(NOT MSVC AND COMPILER_SUPPORTS_CXX11)
     INSTALL_COMMAND ""
     TEST_COMMAND ""
     DEPENDS snappy_lib
+    BUILD_BYPRODUCTS <SOURCE_DIR>/_installed/lib/${CMAKE_STATIC_LIBRARY_PREFIX}rocksdb${CMAKE_STATIC_LIBRARY_SUFFIX}
   )
   ExternalProject_Get_Property (rocksdb SOURCE_DIR)
   set (install_path ${SOURCE_DIR}/_installed)
@@ -551,6 +563,7 @@ ExternalProject_Add (libarchive
     --target archive_static
   TEST_COMMAND ""
   DEPENDS lz4
+  BUILD_BYPRODUCTS <BINARY_DIR>/_installed/lib/${CMAKE_STATIC_LIBRARY_PREFIX}archive${CMAKE_STATIC_LIBRARY_SUFFIX}
 )
 ExternalProject_Get_Property (libarchive BINARY_DIR)
 set (install_path ${BINARY_DIR}/_installed)
@@ -632,15 +645,20 @@ add_library (ripple_protos STATIC
   ${PROTO_SRCS}
   ${PROTO_HDRS})
 target_include_directories (ripple_protos
-    PUBLIC ${CMAKE_BINARY_DIR})
+  PUBLIC ${CMAKE_BINARY_DIR})
 if(TARGET protobuf::libprotobuf)
   target_link_libraries (ripple_protos protobuf::libprotobuf)
 else ()
   target_link_libraries (ripple_protos ${Protobuf_LIBRARIES})
+  target_include_directories (ripple_protos
+    PUBLIC ${Protobuf_INCLUDE_DIR})
 endif ()
 target_compile_options (ripple_protos
   PUBLIC
-    $<$<BOOL:${is_xcode}>:--system-header-prefix="google/protobuf">
+    $<$<BOOL:${is_xcode}>:
+      --system-header-prefix="google/protobuf"
+      -Wno-deprecated-dynamic-exception-spec
+    >
     $<$<BOOL:${MSVC}>:
       -wd4251
       -wd4146
@@ -649,6 +667,19 @@ add_library (ripple::protos ALIAS ripple_protos)
 list (APPEND RIPPLED_LIBRARIES ripple::protos)
 
 #### <<<<>>>>
+# ripple lib core is :
+# all cpp in protocol
+# these cpp in basics
+  #include <ripple/basics/impl/contract.cpp>
+  #include <ripple/basics/impl/CountedObject.cpp>
+  #include <ripple/basics/impl/Log.cpp>
+  #include <ripple/basics/impl/strHex.cpp>
+  #include <ripple/basics/impl/StringUtilities.cpp>
+  #include <ripple/basics/impl/Time.cpp>
+# three cpp in beast (get via lib?)
+# all cpp in crypto
+# all cpp in json (minus a few??)
+# secp256
 
 ############################################################
 
@@ -864,7 +895,6 @@ foreach(target IN LISTS targets)
         ${RIPPLED_NIH_LIBRARIES}
         ${OPENSSL_LIBRARIES}
         ${SANITIZER_LIBRARIES})
-
     link_common_libraries(${target})
 endforeach()
 
