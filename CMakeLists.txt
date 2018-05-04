@@ -170,11 +170,25 @@ add_library (lz4 STATIC
   src/lz4/lib/xxhash.c)
 target_compile_definitions (lz4
   PRIVATE XXH_NAMESPACE=LZ4_)
-target_include_directories (lz4
-  PUBLIC  ${CMAKE_SOURCE_DIR}/src/lz4/lib)
+#target_include_directories (lz4
+#  PUBLIC  ${CMAKE_SOURCE_DIR}/src/lz4/lib)
 add_library (NIH::lz4 ALIAS lz4)
 set_target_properties (lz4 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 list (APPEND RIPPLED_NIH_LIBRARIES NIH::lz4)
+## hacky pseudo-install our files so that dependent builds can find them
+file (MAKE_DIRECTORY
+    ${CMAKE_BINARY_DIR}/lz4/include
+    ${CMAKE_BINARY_DIR}/lz4/lib)
+target_include_directories (lz4
+  PUBLIC  ${CMAKE_BINARY_DIR}/lz4/include)
+add_custom_command (TARGET lz4 POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy
+    ${CMAKE_SOURCE_DIR}/src/lz4/lib/lz4.h
+    ${CMAKE_SOURCE_DIR}/src/lz4/lib/lz4frame.h
+    ${CMAKE_SOURCE_DIR}/src/lz4/lib/lz4hc.h
+    ${CMAKE_BINARY_DIR}/lz4/include
+  COMMAND ${CMAKE_COMMAND} -E copy
+    $<TARGET_FILE:lz4> ${CMAKE_BINARY_DIR}/lz4/lib)
 
 ######################################################################
 ###   NIH dep: libarchive                                          ###
@@ -191,10 +205,8 @@ ExternalProject_Add (libarchive
       -DCMAKE_VERBOSE_MAKEFILE=ON
     >
     -DCMAKE_INSTALL_PREFIX=_installed
+    -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}/lz4
     -DENABLE_LZ4=ON
-    -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
-    -DCMAKE_INCLUDE_PATH=$<TARGET_PROPERTY:lz4,INTERFACE_INCLUDE_DIRECTORIES>
-    -DLZ4_INCLUDE_DIR=$<TARGET_PROPERTY:lz4,INTERFACE_INCLUDE_DIRECTORIES>
     -DENABLE_TAR=OFF
     -DENABLE_TAR_SHARED=OFF
     -DENABLE_INSTALL=ON
