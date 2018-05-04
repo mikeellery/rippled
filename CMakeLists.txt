@@ -170,8 +170,6 @@ add_library (lz4 STATIC
   src/lz4/lib/xxhash.c)
 target_compile_definitions (lz4
   PRIVATE XXH_NAMESPACE=LZ4_)
-#target_include_directories (lz4
-#  PUBLIC  ${CMAKE_SOURCE_DIR}/src/lz4/lib)
 add_library (NIH::lz4 ALIAS lz4)
 set_target_properties (lz4 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 list (APPEND RIPPLED_NIH_LIBRARIES NIH::lz4)
