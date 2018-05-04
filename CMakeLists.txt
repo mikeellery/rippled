@@ -157,6 +157,99 @@ use_protobuf()
 
 setup_build_boilerplate()
 
+include(ExternalProject)
+set(RIPPLED_NIH_LIBRARIES)
+######################################################################
+###   NIH dep: lz4                                                 ###
+######################################################################
+
+add_library (lz4 STATIC
+  src/lz4/lib/lz4.c
+  src/lz4/lib/lz4hc.c
+  src/lz4/lib/lz4frame.c
+  src/lz4/lib/xxhash.c)
+target_compile_definitions (lz4
+  PRIVATE XXH_NAMESPACE=LZ4_)
+target_include_directories (lz4
+  PUBLIC  ${CMAKE_SOURCE_DIR}/src/lz4/lib)
+add_library (NIH::lz4 ALIAS lz4)
+set_target_properties (lz4 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+list (APPEND RIPPLED_NIH_LIBRARIES NIH::lz4)
+
+######################################################################
+###   NIH dep: libarchive                                          ###
+######################################################################
+
+ExternalProject_Add (libarchive
+  GIT_REPOSITORY https://github.com/libarchive/libarchive.git
+  GIT_TAG v3.3.1
+  CMAKE_ARGS
+    $<$<BOOL:${CMAKE_VERBOSE_MAKEFILE}>:
+      -DCMAKE_VERBOSE_MAKEFILE=ON
+    >
+    -DCMAKE_INSTALL_PREFIX=_installed
+    -DENABLE_LZ4=ON
+    -DCMAKE_PREFIX_PATH=${CMAKE_BINARY_DIR}
+    -DCMAKE_INCLUDE_PATH=$<TARGET_PROPERTY:lz4,INTERFACE_INCLUDE_DIRECTORIES>
+    -DLZ4_INCLUDE_DIR=$<TARGET_PROPERTY:lz4,INTERFACE_INCLUDE_DIRECTORIES>
+    -DENABLE_TAR=OFF
+    -DENABLE_TAR_SHARED=OFF
+    -DENABLE_INSTALL=ON
+    -DENABLE_NETTLE=OFF
+    -DENABLE_OPENSSL=OFF
+    -DENABLE_LZO=OFF
+    -DENABLE_LZMA=OFF
+    -DENABLE_ZLIB=OFF
+    -DENABLE_BZip2=OFF
+    -DENABLE_LIBXML2=OFF
+    -DENABLE_EXPAT=OFF
+    -DENABLE_PCREPOSIX=OFF
+    -DENABLE_LibGCC=ON
+    -DENABLE_CNG=OFF
+    -DENABLE_CPIO=OFF
+    -DENABLE_CPIO_SHARED=OFF
+    -DENABLE_CAT=OFF
+    -DENABLE_CAT_SHARED=OFF
+    -DENABLE_XATTR=OFF
+    -DENABLE_ACL=OFF
+    -DENABLE_ICONV=OFF
+    -DENABLE_TEST=OFF
+    -DENABLE_COVERAGE=OFF
+    $<$<BOOL:${MSVC}>:
+      "-DCMAKE_C_FLAGS=-GR -Gd -fp:precise -FS -MP"
+      "-DCMAKE_C_FLAGS_DEBUG=-MTd"
+      "-DCMAKE_C_FLAGS_RELEASE=-MT"
+      "-DCMAKE_C_FLAGS_RELWITHDEBINFO=-MT"
+      "-DCMAKE_C_FLAGS_MINSIZEREL=-MT"
+    >
+  LOG_BUILD ON
+  LOG_CONFIGURE ON
+  BUILD_COMMAND
+    ${CMAKE_COMMAND}
+    --build .
+    --config $<CONFIG>
+    --target archive_static
+  TEST_COMMAND ""
+  DEPENDS lz4
+  BUILD_BYPRODUCTS <BINARY_DIR>/_installed/lib/${CMAKE_STATIC_LIBRARY_PREFIX}archive${CMAKE_STATIC_LIBRARY_SUFFIX}
+)
+ExternalProject_Get_Property (libarchive BINARY_DIR)
+set (install_path ${BINARY_DIR}/_installed)
+add_library (archive_lib STATIC IMPORTED GLOBAL)
+set_target_properties (archive_lib PROPERTIES
+  IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}archive${CMAKE_STATIC_LIBRARY_SUFFIX}
+  INTERFACE_INCLUDE_DIRECTORIES ${install_path}/include
+  INTERFACE_COMPILE_DEFINITIONS LIBARCHIVE_STATIC)
+file (MAKE_DIRECTORY ${install_path}/include)
+add_dependencies (archive_lib libarchive)
+target_link_libraries(archive_lib INTERFACE NIH::lz4)
+if (${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.11)
+  add_library (NIH::libarchive ALIAS archive_lib)
+  list (APPEND RIPPLED_NIH_LIBRARIES NIH::libarchive)
+else ()
+  list (APPEND RIPPLED_NIH_LIBRARIES archive_lib)
+endif()
+
 ############################################################
 
 if (is_clang)
@@ -397,7 +490,6 @@ add_with_props(rippled_src_all src/ripple/unity/secp256k1.cpp
 
 foreach(cursrc
     src/ripple/unity/beast.cpp
-    src/ripple/unity/lz4.c
     src/ripple/unity/protobuf.cpp
     src/ripple/unity/ripple.proto.cpp)
 
@@ -494,7 +586,7 @@ set_startup_project(rippled)
 
 foreach(target IN LISTS targets)
     target_link_libraries(${target}
-      ${OPENSSL_LIBRARIES} ${PROTOBUF_LIBRARIES} ${SANITIZER_LIBRARIES})
+      ${RIPPLED_NIH_LIBRARIES} ${OPENSSL_LIBRARIES} ${PROTOBUF_LIBRARIES} ${SANITIZER_LIBRARIES})
 
     link_common_libraries(${target})
 endforeach()
