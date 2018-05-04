@@ -179,7 +179,10 @@ list (APPEND RIPPLED_NIH_LIBRARIES NIH::lz4)
 ######################################################################
 ###   NIH dep: libarchive                                          ###
 ######################################################################
-
+set (la_root_suffix)
+if (MSVC)
+  set(la_root_suffix "_static")
+endif ()
 ExternalProject_Add (libarchive
   GIT_REPOSITORY https://github.com/libarchive/libarchive.git
   GIT_TAG v3.3.1
@@ -231,13 +234,14 @@ ExternalProject_Add (libarchive
     --target archive_static
   TEST_COMMAND ""
   DEPENDS lz4
-  BUILD_BYPRODUCTS <BINARY_DIR>/_installed/lib/${CMAKE_STATIC_LIBRARY_PREFIX}archive${CMAKE_STATIC_LIBRARY_SUFFIX}
+  BUILD_BYPRODUCTS
+    <BINARY_DIR>/_installed/lib/${CMAKE_STATIC_LIBRARY_PREFIX}archive${la_root_suffix}${CMAKE_STATIC_LIBRARY_SUFFIX}
 )
 ExternalProject_Get_Property (libarchive BINARY_DIR)
 set (install_path ${BINARY_DIR}/_installed)
 add_library (archive_lib STATIC IMPORTED GLOBAL)
 set_target_properties (archive_lib PROPERTIES
-  IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}archive${CMAKE_STATIC_LIBRARY_SUFFIX}
+  IMPORTED_LOCATION ${install_path}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}archive${la_root_suffix}${CMAKE_STATIC_LIBRARY_SUFFIX}
   INTERFACE_INCLUDE_DIRECTORIES ${install_path}/include
   INTERFACE_COMPILE_DEFINITIONS LIBARCHIVE_STATIC)
 file (MAKE_DIRECTORY ${install_path}/include)
