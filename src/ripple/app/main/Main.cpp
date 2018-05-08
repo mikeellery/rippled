@@ -181,6 +181,39 @@ void printHelp (const po::options_description& desc)
 
 //------------------------------------------------------------------------------
 
+/* simple unit test selector that allows a comma separated list
+ * of selectors
+ */
+class multi_selector
+{
+private:
+    std::vector <beast::unit_test::selector> selectors_;
+public:
+    explicit
+    multi_selector(std::string const& patterns = "")
+    {
+        std::vector<std::string> v;
+        boost::split (v, patterns, boost::algorithm::is_any_of (","));
+        selectors_.reserve(v.size());
+        std::for_each(v.begin(), v.end(),
+            [this](std::string const& s)
+            {
+                if (selectors_.empty() || !s.empty())
+                    selectors_.emplace_back(
+                        beast::unit_test::selector::automatch, s);
+            });
+    }
+
+    bool
+    operator()(beast::unit_test::suite_info const& s)
+    {
+        for (auto& sel : selectors_)
+            if (sel(s))
+                return true;
+        return false;
+    }
+};
+
 static int runUnitTests(
     std::string const& pattern,
     std::string const& argument,
@@ -201,7 +234,8 @@ static int runUnitTests(
         multi_runner_parent parent_runner;
 
         multi_runner_child child_runner{num_jobs, quiet, log};
-        auto const any_failed = child_runner.run_multi(match_auto(pattern));
+        child_runner.arg(argument);
+        auto const any_failed = child_runner.run_multi(multi_selector(pattern));
 
         if (any_failed)
             return EXIT_FAILURE;
@@ -250,7 +284,8 @@ static int runUnitTests(
     {
         // child
         multi_runner_child runner{num_jobs, quiet, log};
-        auto const anyFailed = runner.run_multi(match_auto(pattern));
+        runner.arg(argument);
+        auto const anyFailed = runner.run_multi(multi_selector(pattern));
 
         if (anyFailed)
             return EXIT_FAILURE;

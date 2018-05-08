@@ -27,6 +27,7 @@ class suite_info
     std::string module_;
     std::string library_;
     bool manual_;
+    int priority_;
     run_type run_;
 
 public:
@@ -35,11 +36,13 @@ public:
             std::string module,
             std::string library,
             bool manual,
+            int priority,
             run_type run)
         : name_(std::move(name))
         , module_(std::move(module))
         , library_(std::move(library))
         , manual_(manual)
+        , priority_(priority)
         , run_(std::move(run))
     {
     }
@@ -87,9 +90,12 @@ public:
     bool
     operator<(suite_info const& lhs, suite_info const& rhs)
     {
-        return
-            std::tie(lhs.library_, lhs.module_, lhs.name_) <
-            std::tie(rhs.library_, rhs.module_, rhs.name_);
+        if (lhs.priority_ == rhs.priority_)
+            return std::tie(lhs.library_, lhs.module_, lhs.name_) <
+                   std::tie(rhs.library_, rhs.module_, rhs.name_);
+        else
+            // we want higher priority suites sorted first
+            return lhs.priority_ > rhs.priority_;
     }
 };
 
@@ -102,13 +108,15 @@ make_suite_info(
     std::string name,
     std::string module,
     std::string library,
-    bool manual)
+    bool manual,
+    int priority)
 {
     return suite_info(
         std::move(name),
         std::move(module),
         std::move(library),
         manual,
+        priority,
         [](runner& r)
         {
             Suite{}(r);
