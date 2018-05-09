@@ -69,15 +69,27 @@ try {
                 }
 
                 if (! collab_found) {
-                    manager.addShortText(
-                        'Author of this change is not a collaborator!',
-                        'Crimson',
-                        'white',
-                        '0px',
-                        'white')
-                    all_status['startup'] =
-                        [false, 'Author Check', "$CHANGE_AUTHOR is not a collaborator!"]
-                    error "$CHANGE_AUTHOR does not appear to be a collaborator...bailing on this build"
+                    echo "$CHANGE_AUTHOR is not a collaborator - waiting for manual approval."
+                    try {
+                        response = httpRequest(
+                            timeout: 10,
+                            authentication: github_cred,
+                            url: getCommentURL(),
+                            contentType: 'APPLICATION_JSON',
+                            httpMode: 'POST',
+                            requestBody: JsonOutput.toJson([
+                                body: """
+**Thank you** for your submission. It will be reviewed soon and submitted for processing in CI.
+"""
+                            ])
+                        )
+                    }
+                    catch (e) {
+                        echo 'had a problem interacting with github...comments are probably not updated'
+                    }
+
+                    input (
+                        message: "User $CHANGE_AUTHOR has submitted a PR #$CHANGE_ID. Okay to proceed with building?")
                 }
             }
         }
@@ -380,7 +392,7 @@ Build Type | Log | Result | Status
     results
 }
 
-def getCommentID () {
+def getCommentURL () {
     def url_c = ''
     if (env.CHANGE_ID && env.CHANGE_ID ==~ /\d+/) {
         //
@@ -404,6 +416,11 @@ def getCommentID () {
         url_c =
             "${github_api}/commits/${commit_id}/comments"
     }
+    url_c
+}
+
+def getCommentID () {
+    def url_c = getCommentURL()
     def response = httpRequest(
         timeout: 10,
         authentication: github_cred,
