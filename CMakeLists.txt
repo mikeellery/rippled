@@ -1,3 +1,4 @@
+# SOME CHANGE
 # cmake support for building rippled. The rippled specific settings
 # below can be set at the command line as `-D<setting>=<value>`.
 #
